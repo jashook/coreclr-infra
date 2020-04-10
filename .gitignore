@@ -1,0 +1,10 @@
+#.NET Core intermediate files
+
+bin/
+obj/
+
+.nuget/
+
+# Python related files
+
+*.pyc
