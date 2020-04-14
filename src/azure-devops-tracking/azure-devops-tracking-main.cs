@@ -8,6 +8,9 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 
+using System;
+using System.CommandLine.DragonFruit;
+using System.Diagnostics;
 using System.Threading.Tasks;
 
 using Microsoft.Azure.Cosmos;
@@ -17,15 +20,64 @@ using Microsoft.Azure.Cosmos;
 
 public class AzureDevOpsTrackingMain
 {
-    public async static Task MainAsync()
+    public async static Task MainAsync(bool recreateDb = false, DateTime? date=null)
     {
-        var tracker = new AzureDevopsTracking();
+        var tracker = new AzureDevopsTracking(recreateDb);
+
+        if (date != null)
+        {
+            await tracker.Remove((DateTime)date);
+        }
 
         await tracker.Update();
     }
 
-    public static void Main()
+    public static int Main(bool recreateDb=false,
+                           bool reUpdate=false,
+                           string timespan=null)
     {
-        MainAsync().Wait();
+        if (reUpdate)
+        {
+            if (timespan == null)
+            {
+                Console.WriteLine($"--timespan required with --re-update.");
+                return 1;
+            }
+
+            DateTime time = DateTime.Now;
+
+            if (timespan.EndsWith('h'))
+            {
+                Debug.Assert(timespan.StartsWith('-'));
+
+                string amount = timespan.Substring(1, timespan.Length -2);
+                int parsedAmount = int.Parse(amount);
+
+                time = time.AddHours(-parsedAmount);
+            }
+            else if (timespan.EndsWith('d'))
+            {
+                Debug.Assert(timespan.StartsWith('-'));
+
+                string amount = timespan.Substring(1, timespan.Length -2);
+                int parsedAmount = int.Parse(amount);
+
+                time = time.AddDays(-parsedAmount);
+            }
+            else
+            {
+                Console.WriteLine("Please pass timespan as -(time)d or -(time)h");
+                return 1;
+            }
+
+            MainAsync(recreateDb, time).Wait();
+        }
+
+        else
+        {
+            MainAsync(recreateDb).Wait();
+        }
+
+        return 0;
     }
 }

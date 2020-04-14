@@ -112,46 +112,140 @@ public class AzureDevopsTracking
     // Constructors
     ////////////////////////////////////////////////////////////////////////////
 
-    public AzureDevopsTracking()
+    public AzureDevopsTracking(bool recreateDb=false)
     {
         SetupDatabase().Wait();
-        SetupCollection().Wait();
+        SetupCollection(recreateDb).Wait();
     }
 
     ////////////////////////////////////////////////////////////////////////////
     // Public member methods
     ////////////////////////////////////////////////////////////////////////////
 
+    public async Task Remove(DateTime dateToStartRemoving)
+    {
+        int modelDeletedCount = 1;
+        int modelFailedDeleteCount = 0;
+        int jobDeletedCount = 1;
+        int jobFailedDeleteCount = 0;
+
+        // try
+        // {
+        //     var queryable = RuntimeContainer.GetItemLinqQueryable<RuntimeModel>();
+        //     var query = queryable.Where(item => item.DateStart > dateToStartRemoving);
+
+        //     FeedIterator<RuntimeModel> iterator = query.ToFeedIterator();
+
+        //     while (iterator.HasMoreResults)
+        //     {
+        //         var cosmosResult = await iterator.ReadNextAsync();
+                
+        //         IEnumerable<RuntimeModel> items = cosmosResult.Take(cosmosResult.Resource.Count());
+                
+        //         int totalCount = items.Count();
+        //         foreach (var item in items)
+        //         {
+        //             Console.WriteLine($"[{modelDeletedCount++}:{totalCount}] Deleting.");
+
+        //             try
+        //             {
+        //                 await RuntimeContainer.DeleteItemAsync<RuntimeModel>(item.Id, new PartitionKey(item.BuildReasonString));
+        //             }
+        //             catch (Exception e)
+        //             {
+        //                 ++modelFailedDeleteCount;
+        //                 Console.Write(e.ToString());
+        //             }
+        //         }
+        //     }
+        // }
+        // catch (Exception e)
+        // {
+        //     Console.Write(e);5
+        // }
+
+        try
+        {
+            var queryable = JobContainer.GetItemLinqQueryable<AzureDevOpsJobModel>();
+            var query = queryable.Where(item => item.DateStart > dateToStartRemoving);
+
+            FeedIterator<AzureDevOpsJobModel> iterator = query.ToFeedIterator();
+
+            while (iterator.HasMoreResults)
+            {
+                var cosmosResult = await iterator.ReadNextAsync();
+
+                IEnumerable<AzureDevOpsJobModel> items = cosmosResult.Take(cosmosResult.Resource.Count());
+            
+                int totalCount = items.Count();
+                foreach (var item in items)
+                {
+                    Console.WriteLine($"[{jobDeletedCount++}:{totalCount}] Deleting.");
+
+                    bool found = false;
+                    try
+                    {
+                        // Read the item to see if it exists
+                        ItemResponse<AzureDevOpsJobModel> response = await JobContainer.ReadItemAsync<AzureDevOpsJobModel>(id: item.Id, partitionKey: new PartitionKey(item.Name));
+                        found = true;
+                    }
+                    catch(CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+                    {
+                        found = false;
+                    }
+
+                    Debug.Assert(found);
+                    
+                    try 
+                    {
+                        await JobContainer.DeleteItemAsync<AzureDevOpsJobModel>(item.Name, new PartitionKey(item.Name));
+                    }
+                    catch (Exception e)
+                    {
+                        Console.Write(e.ToString());
+                    }
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Console.Write(e);
+            ++jobFailedDeleteCount;
+        }
+
+        Console.WriteLine("Models:");
+        Console.WriteLine($"Deleted: {modelDeletedCount}, Failed to Delete: {modelFailedDeleteCount}");
+        Console.WriteLine("Jobs:");
+        Console.WriteLine($"Deleted: {jobDeletedCount}, Failed to Delete: {jobFailedDeleteCount}");
+    }
+
     public async Task Update()
     {
-        int limit = 40;
+        int limit = 200;
 
         var lastRun = await GetLastRunFromDb();
-        var runs = await GetRunsSince(lastRun, limit);
 
+        List<Build> builds = await Server.ListBuildsAsync("public", new int[] {
+            686
+        });
+
+        var runs = await GetRunsSince(lastRun, builds, limit);
+
+        int runsUploaded = 0;
         while (runs.Count > 0)
         {
+            runsUploaded += runs.Count;
             await UploadRuns(runs);
+            lastRun = await GetLastRunFromDb();
 
-            bool retry = false;
-            int backoffAmount = 1000;
-            int count = 1;
-            do
+            if (runs.Count % (limit * 5) == 0)
             {
-                try
-                {
-                    lastRun = await GetLastRunFromDb();
-                }
-                catch (Exception e)
-                {
-                    int waitTime = backoffAmount * count++;
-                    Console.WriteLine($"Failed to get last run. Waiting {waitTime}");
-                    retry = true;
-                    Thread.Sleep(waitTime);
-                }
-            } while (retry);
+                builds = await Server.ListBuildsAsync("public", new int[] {
+                    686
+                });
+            }
 
-            runs = await GetRunsSince(lastRun, limit);
+            runs = await GetRunsSince(lastRun, builds, limit);
         }
 
         Debug.Assert(runs.Count == 0);
@@ -187,15 +281,13 @@ public class AzureDevopsTracking
         return model;
     }
 
-    private async Task<List<RuntimeModel>> GetRunsSince(RuntimeModel lastRun, int limit = -1)
+    private async Task<List<RuntimeModel>> GetRunsSince(RuntimeModel lastRun, List<Build> builds, int limit = -1)
     {
-        var builds = await Server.ListBuildsAsync("public", new int[] {
-            686
-        });
+        Debug.Assert(builds != null);
 
+        List<Build> filteredBuilds = new List<Build>();
         if (lastRun != null)
         {
-            List<Build> filteredBuilds = new List<Build>();
             var lastStartDateToFilter = lastRun.DateStart;
 
             foreach (var item in builds)
@@ -207,13 +299,18 @@ public class AzureDevopsTracking
                     filteredBuilds.Add(item);
                 }
             }
-
-            builds = filteredBuilds;
+        }
+        else
+        {
+            foreach(var item in builds)
+            {
+                filteredBuilds.Add(item);
+            }
         }
 
         List<RuntimeModel> models = new List<RuntimeModel>();
         List<Build> buildRecords = new List<Build>();
-        foreach (var item in builds)
+        foreach (var item in filteredBuilds)
         {
             buildRecords.Add(item);
         }
@@ -246,6 +343,7 @@ public class AzureDevopsTracking
             model.BuildResult = build.Result;
             model.BuildNumber = build.BuildNumber;
             model.BuildReason = build.Reason;
+            model.BuildReasonString = build.Reason.ToString();
             
             if (build.Reason == BuildReason.PullRequest)
             {
@@ -300,6 +398,7 @@ public class AzureDevopsTracking
                 {
                     step.ConsoleUri = record.Log.Url;
 
+                    
                     if (step.Name.Contains("Evaluate paths for"))
                     {
                         await HttpRequest(step.ConsoleUri, async (htmlResponse) =>
@@ -453,6 +552,7 @@ public class AzureDevopsTracking
             modelQueue.Enqueue(item);
         }
 
+        int modelConflicts = 0;
         while (modelQueue.Count != 0)
         {
             var model = modelQueue.Dequeue();
@@ -460,7 +560,8 @@ public class AzureDevopsTracking
 
             foreach (var item in model.Jobs)
             {
-                item.Id = item.JobGuid + item.DateStart.ToString() + item.DateEnd.ToString();
+                // Use random value for ID
+                item.Id = Guid.NewGuid().ToString();
                 item.PipelineId = model.Id;
 
                 jobQueue.Enqueue(item);
@@ -469,37 +570,13 @@ public class AzureDevopsTracking
             // Zero out the data for the jobs, they will be uploaded seperately
             model.Jobs = null;
 
-            bool found = false;
             try
             {
-                // Read the item to see if it exists
-                ItemResponse<RuntimeModel> response = await RuntimeContainer.ReadItemAsync<RuntimeModel>(model.Id, new PartitionKey(model.Id));
-                found = true;
+                await RuntimeContainer.CreateItemAsync<RuntimeModel>(model, new PartitionKey(model.BuildReasonString));
             }
-            catch(CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+            catch (Exception e)
             {
-                found = false;
-            }
-
-            if (found)
-            {
-                Debug.Assert(found);
-            }
-
-            else
-            {
-                try
-                {
-                    await RuntimeContainer.CreateItemAsync<RuntimeModel>(model, new PartitionKey(model.Id));
-                }
-                catch (Exception e)
-                {
-                    // Unable to upload the item, keep trying.
-                    modelQueue.Enqueue(model);
-                    
-                    // Wait a time bit.
-                    Thread.Sleep(500);
-                }
+                ++modelConflicts;
             }
         }
 
@@ -508,14 +585,20 @@ public class AzureDevopsTracking
         while (jobQueue.Count != 0)
         {
             var jobModel = jobQueue.Dequeue();
+
+            var unModifiedId = jobModel.Id;
+            int conflictCount = 1;
             try
             {
                 Console.WriteLine($"[{itemNumber++}:{totalCount}] Uploading job.");
-                await JobContainer.CreateItemAsync<AzureDevOpsJobModel>(jobModel, new PartitionKey(jobModel.Id));
+                await JobContainer.CreateItemAsync<AzureDevOpsJobModel>(jobModel, new PartitionKey(jobModel.Name));
             }
             catch (Exception e)
             {
                 // Unable to upload the item, keep trying.
+
+                jobModel.Id = $"{unModifiedId}-{conflictCount++}";
+                jobQueue.Enqueue(jobModel);
 
                 ++conflicts;
             }
@@ -526,15 +609,24 @@ public class AzureDevopsTracking
     // Private setup methods
     ////////////////////////////////////////////////////////////////////////////
 
-    public async Task SetupDatabase()
+    public async Task SetupDatabase(bool deleteData=false)
     {
         this.Db = await Client.CreateDatabaseIfNotExistsAsync(DatabaseName);
     }
 
-    public async Task SetupCollection()
+    public async Task SetupCollection(bool deleteData=false)
     {
-        this.RuntimeContainer = await Db.CreateContainerIfNotExistsAsync(RuntimeContainerName, "/id");
-        this.JobContainer = await Db.CreateContainerIfNotExistsAsync(JobContainerName, "/id");
+        if (deleteData)
+        {
+            await Db.GetContainer(RuntimeContainerName).DeleteContainerAsync();
+            await Db.GetContainer(JobContainerName).DeleteContainerAsync();
+        }
+
+        ContainerProperties runtimeContainerProperties = new ContainerProperties(RuntimeContainerName, partitionKeyPath: "/BuildReasonString");
+        ContainerProperties jobContainerProperties = new ContainerProperties(JobContainerName, partitionKeyPath: "/Name");
+
+        this.RuntimeContainer = await Db.CreateContainerIfNotExistsAsync(runtimeContainerProperties, throughput: 400);
+        this.JobContainer = await Db.CreateContainerIfNotExistsAsync(jobContainerProperties, throughput: 1000);
     }
 
 }

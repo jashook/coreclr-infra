@@ -40,6 +40,9 @@ public class RuntimeModel
 
     public BuildReason BuildReason { get; set; }
 
+    [JsonProperty(PropertyName = "BuildReasonString")]
+    public string BuildReasonString { get; set; }
+
     public string PrNumber { get; set; }
 
     public string PrSourceBranch { get; set; }

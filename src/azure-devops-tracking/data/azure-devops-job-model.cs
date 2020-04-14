@@ -36,6 +36,7 @@ public class AzureDevOpsJobModel
 
     public List<AzureDevOpsStepModel> Steps { get; set; }
 
+    [JsonProperty(PropertyName = "Name")]
     public string Name { get; set; }
 
     public string JobGuid { get; set; }
