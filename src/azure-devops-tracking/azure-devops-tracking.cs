@@ -22,6 +22,8 @@ using System.Threading.Tasks;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Azure.Cosmos.Linq;
 
+using Microsoft.Extensions.Configuration;
+
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -30,6 +32,68 @@ using DevOps.Util;
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
+
+// </ResponseType>
+public class BulkOperationResponse<T>
+{
+    public TimeSpan TotalTimeTaken { get; set; }
+    public int SuccessfulDocuments { get; set; } = 0;
+    public double TotalRequestUnitsConsumed { get; set; } = 0;
+
+    public IReadOnlyList<(T, Exception)> Failures { get; set; }
+}
+// </ResponseType>
+
+// <OperationResult>
+public class OperationResponse<T>
+{
+    public T Item { get; set; }
+    public double RequestUnitsConsumed { get; set; } = 0;
+    public bool IsSuccessful { get; set; }
+    public Exception CosmosException { get; set; }
+}
+// </OperationResult>
+
+public static class TaskExtensions
+{
+    // <CaptureOperationResult>
+    public static Task<OperationResponse<T>> CaptureOperationResponse<T>(this Task<ItemResponse<T>> task, T item)
+    {
+        return task.ContinueWith(itemResponse =>
+        {
+            if (itemResponse.IsCompletedSuccessfully)
+            {
+                return new OperationResponse<T>()
+                {
+                    Item = item,
+                    IsSuccessful = true,
+                    RequestUnitsConsumed = task.Result.RequestCharge
+                };
+            }
+
+            AggregateException innerExceptions = itemResponse.Exception.Flatten();
+            CosmosException cosmosException = innerExceptions.InnerExceptions.FirstOrDefault(innerEx => innerEx is CosmosException) as CosmosException;
+            if (cosmosException != null)
+            {
+                return new OperationResponse<T>()
+                {
+                    Item = item,
+                    RequestUnitsConsumed = cosmosException.RequestCharge,
+                    IsSuccessful = false,
+                    CosmosException = cosmosException
+                };
+            }
+
+            return new OperationResponse<T>()
+            {
+                Item = item,
+                IsSuccessful = false,
+                CosmosException = innerExceptions.InnerExceptions.FirstOrDefault()
+            };
+        });
+    }
+    // </CaptureOperationResult>
+}
 
 public class AzureDevopsTracking
 {
@@ -90,7 +154,7 @@ public class AzureDevopsTracking
         {
             if (_client == null)
             {
-                _client = new CosmosClient(EndpointUri, PrimaryKey);
+                _client = new CosmosClient(EndpointUri, PrimaryKey, new CosmosClientOptions() { AllowBulkExecution = true });
             }
 
             return _client;
@@ -129,40 +193,40 @@ public class AzureDevopsTracking
         int jobDeletedCount = 1;
         int jobFailedDeleteCount = 0;
 
-        // try
-        // {
-        //     var queryable = RuntimeContainer.GetItemLinqQueryable<RuntimeModel>();
-        //     var query = queryable.Where(item => item.DateStart > dateToStartRemoving);
+        try
+        {
+            var queryable = RuntimeContainer.GetItemLinqQueryable<RuntimeModel>();
+            var query = queryable.Where(item => item.DateStart > dateToStartRemoving);
 
-        //     FeedIterator<RuntimeModel> iterator = query.ToFeedIterator();
+            FeedIterator<RuntimeModel> iterator = query.ToFeedIterator();
 
-        //     while (iterator.HasMoreResults)
-        //     {
-        //         var cosmosResult = await iterator.ReadNextAsync();
+            while (iterator.HasMoreResults)
+            {
+                var cosmosResult = await iterator.ReadNextAsync();
                 
-        //         IEnumerable<RuntimeModel> items = cosmosResult.Take(cosmosResult.Resource.Count());
+                IEnumerable<RuntimeModel> items = cosmosResult.Take(cosmosResult.Resource.Count());
                 
-        //         int totalCount = items.Count();
-        //         foreach (var item in items)
-        //         {
-        //             Console.WriteLine($"[{modelDeletedCount++}:{totalCount}] Deleting.");
+                int totalCount = items.Count();
+                foreach (var item in items)
+                {
+                    Console.WriteLine($"[{modelDeletedCount++}:{totalCount}] Deleting.");
 
-        //             try
-        //             {
-        //                 await RuntimeContainer.DeleteItemAsync<RuntimeModel>(item.Id, new PartitionKey(item.BuildReasonString));
-        //             }
-        //             catch (Exception e)
-        //             {
-        //                 ++modelFailedDeleteCount;
-        //                 Console.Write(e.ToString());
-        //             }
-        //         }
-        //     }
-        // }
-        // catch (Exception e)
-        // {
-        //     Console.Write(e);5
-        // }
+                    try
+                    {
+                        await RuntimeContainer.DeleteItemAsync<RuntimeModel>(item.Id, new PartitionKey(item.BuildReasonString));
+                    }
+                    catch (Exception e)
+                    {
+                        ++modelFailedDeleteCount;
+                        Console.Write(e.ToString());
+                    }
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Console.Write(e);
+        }
 
         try
         {
@@ -171,40 +235,60 @@ public class AzureDevopsTracking
 
             FeedIterator<AzureDevOpsJobModel> iterator = query.ToFeedIterator();
 
+            List<Task<OperationResponse<AzureDevOpsJobModel>>> retries = new List<Task<OperationResponse<AzureDevOpsJobModel>>>();
+
             while (iterator.HasMoreResults)
             {
                 var cosmosResult = await iterator.ReadNextAsync();
 
                 IEnumerable<AzureDevOpsJobModel> items = cosmosResult.Take(cosmosResult.Resource.Count());
-            
-                int totalCount = items.Count();
-                foreach (var item in items)
+
+                // <BulkDelete>
+                List<Task<OperationResponse<AzureDevOpsJobModel>>> operations = new List<Task<OperationResponse<AzureDevOpsJobModel>>>(items.Count());
+                foreach (AzureDevOpsJobModel document in items)
                 {
-                    Console.WriteLine($"[{jobDeletedCount++}:{totalCount}] Deleting.");
+                    operations.Add(JobContainer.DeleteItemAsync<AzureDevOpsJobModel>(document.Id, new PartitionKey(document.Name)).CaptureOperationResponse(document));
+                }
+                // </BulkDelete>
 
-                    bool found = false;
-                    try
-                    {
-                        // Read the item to see if it exists
-                        ItemResponse<AzureDevOpsJobModel> response = await JobContainer.ReadItemAsync<AzureDevOpsJobModel>(id: item.Id, partitionKey: new PartitionKey(item.Name));
-                        found = true;
-                    }
-                    catch(CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-                    {
-                        found = false;
-                    }
+                BulkOperationResponse<AzureDevOpsJobModel> bulkOperationResponse = await ExecuteTasksAsync(operations);
+                Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
+                Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+                Console.WriteLine($"Deleted {bulkOperationResponse.SuccessfulDocuments} documents");
+                Console.WriteLine($"Failed {bulkOperationResponse.Failures.Count} documents");
+                if (bulkOperationResponse.Failures.Count > 0)
+                {
+                    Console.WriteLine($"First failed sample document {bulkOperationResponse.Failures[0].Item1.Id} - {bulkOperationResponse.Failures[0].Item2}");
 
-                    Debug.Assert(found);
-                    
-                    try 
+
+                    foreach (var item in bulkOperationResponse.Failures)
                     {
-                        await JobContainer.DeleteItemAsync<AzureDevOpsJobModel>(item.Name, new PartitionKey(item.Name));
-                    }
-                    catch (Exception e)
-                    {
-                        Console.Write(e.ToString());
+                        retries.Add(JobContainer.DeleteItemAsync<AzureDevOpsJobModel>(item.Item1.Id, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
                     }
                 }
+
+                jobDeletedCount += bulkOperationResponse.SuccessfulDocuments;
+            }
+
+            while (retries.Count > 0)
+            {
+                BulkOperationResponse<AzureDevOpsJobModel> bulkOperationResponse = await ExecuteTasksAsync(retries);
+                Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
+                Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+                Console.WriteLine($"Deleted {bulkOperationResponse.SuccessfulDocuments} documents");
+                Console.WriteLine($"Failed {bulkOperationResponse.Failures.Count} documents");
+                if (bulkOperationResponse.Failures.Count > 0)
+                {
+                    Console.WriteLine($"First failed sample document {bulkOperationResponse.Failures[0].Item1.Id} - {bulkOperationResponse.Failures[0].Item2}");
+
+
+                    foreach (var item in bulkOperationResponse.Failures)
+                    {
+                        retries.Add(JobContainer.DeleteItemAsync<AzureDevOpsJobModel>(item.Item1.Id, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
+                    }
+                }
+
+                jobDeletedCount += bulkOperationResponse.SuccessfulDocuments;
             }
         }
         catch (Exception e)
@@ -252,8 +336,31 @@ public class AzureDevopsTracking
     }
 
     ////////////////////////////////////////////////////////////////////////////
+    // Private types
+    ////////////////////////////////////////////////////////////////////////////
+
+    
+
+    ////////////////////////////////////////////////////////////////////////////
     // Private member methods
     ////////////////////////////////////////////////////////////////////////////
+
+    private static async Task<BulkOperationResponse<T>> ExecuteTasksAsync<T>(IReadOnlyList<Task<OperationResponse<T>>> tasks)
+    {
+        // <WhenAll>
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        await Task.WhenAll(tasks);
+        stopwatch.Stop();
+
+        return new BulkOperationResponse<T>()
+        {
+            TotalTimeTaken = stopwatch.Elapsed,
+            TotalRequestUnitsConsumed = tasks.Sum(task => task.Result.RequestUnitsConsumed),
+            SuccessfulDocuments = tasks.Count(task => task.Result.IsSuccessful),
+            Failures = tasks.Where(task => !task.Result.IsSuccessful).Select(task => (task.Result.Item, task.Result.CosmosException)).ToList()
+        };
+        // </WhenAll>
+    }
 
     private async Task<RuntimeModel> GetLastRunFromDb()
     {
@@ -447,6 +554,7 @@ public class AzureDevopsTracking
                 var record = records[kv.Key];
 
                 if (record.StartTime == null) continue;
+                else if (record.FinishTime == null) continue;
 
                 jobModel.DateEnd = DateTime.Parse(record.FinishTime);
                 jobModel.DateStart = DateTime.Parse(record.StartTime);

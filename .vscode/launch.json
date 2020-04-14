@@ -12,9 +12,9 @@
             "program": "${workspaceFolder}/src/azure-devops-tracking/bin/Debug/netcoreapp3.1/azure-devops-tracking.dll",
             "args": [
                 //"--recreate-db"
-                // "--re-update",
-                // "--timespan",
-                // "-7d"
+                "--re-update",
+                "--timespan",
+                "-30d"
             ],
             "cwd": "${workspaceFolder}/src/azure-devops-tracking",
             "console": "internalConsole",
