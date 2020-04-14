@@ -722,6 +722,9 @@ public class AzureDevopsTracking
             Console.WriteLine($"Consumed {runtimeBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
             Console.WriteLine($"Created {runtimeBulkOperationResponse.SuccessfulDocuments} documents");
             Console.WriteLine($"Failed {runtimeBulkOperationResponse.Failures.Count} documents");
+
+            runtimeRetries.Clear();
+            
             if (runtimeBulkOperationResponse.Failures.Count > 0)
             {
                 Console.WriteLine($"First failed sample document {runtimeBulkOperationResponse.Failures[0].Item1.Id} - {runtimeBulkOperationResponse.Failures[0].Item2}");
@@ -805,6 +808,9 @@ public class AzureDevopsTracking
             Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
             Console.WriteLine($"Created {bulkOperationResponse.SuccessfulDocuments} documents");
             Console.WriteLine($"Failed {bulkOperationResponse.Failures.Count} documents");
+            
+            retries.Clear();
+
             if (bulkOperationResponse.Failures.Count > 0)
             {
                 Console.WriteLine($"First failed sample document {bulkOperationResponse.Failures[0].Item1.Id} - {bulkOperationResponse.Failures[0].Item2}");
@@ -841,7 +847,7 @@ public class AzureDevopsTracking
         ContainerProperties jobContainerProperties = new ContainerProperties(JobContainerName, partitionKeyPath: "/Name");
 
         this.RuntimeContainer = await Db.CreateContainerIfNotExistsAsync(runtimeContainerProperties, throughput: 1000);
-        this.JobContainer = await Db.CreateContainerIfNotExistsAsync(jobContainerProperties, throughput: 3500);
+        this.JobContainer = await Db.CreateContainerIfNotExistsAsync(jobContainerProperties, throughput: 3000);
     }
 
 }
