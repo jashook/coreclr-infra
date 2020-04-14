@@ -742,16 +742,44 @@ public class AzureDevopsTracking
         int jobsCreatedCount = 1;
         int totalJobCount = jobQueue.Count;
 
+        int jobCount = 1;
+        int sliceAmount = 100;
+
         // <BulkCreate>
         List<Task<OperationResponse<AzureDevOpsJobModel>>> operations = new List<Task<OperationResponse<AzureDevOpsJobModel>>>(totalJobCount);
         foreach (AzureDevOpsJobModel document in jobQueue)
         {
+            if (jobCount++ % sliceAmount == 0)
+            {
+                Console.WriteLine($"[{jobsCreatedCount}:{totalJobCount}] Beginning bulk upload slice. Amount to upload: {sliceAmount}");
+    
+                var sliceBulkOperationResponse = await ExecuteTasksAsync(operations);
+                Console.WriteLine($"Bulk update operation finished in {sliceBulkOperationResponse.TotalTimeTaken}");
+                Console.WriteLine($"Consumed {sliceBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+                Console.WriteLine($"Created {sliceBulkOperationResponse.SuccessfulDocuments} documents");
+                Console.WriteLine($"Failed {sliceBulkOperationResponse.Failures.Count} documents");
+                if (sliceBulkOperationResponse.Failures.Count > 0)
+                {
+                    Console.WriteLine($"First failed sample document {sliceBulkOperationResponse.Failures[0].Item1.Id} - {sliceBulkOperationResponse.Failures[0].Item2}");
+
+
+                    foreach (var item in sliceBulkOperationResponse.Failures)
+                    {
+                        retries.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(item.Item1, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
+                    }
+                }
+
+                jobsCreatedCount += sliceBulkOperationResponse.SuccessfulDocuments;
+
+                operations.Clear();
+            }
+
             operations.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(document, new PartitionKey(document.Name)).CaptureOperationResponse(document));
         }
         // </BulkCreate>
 
-        Console.WriteLine($"Beginning bulk upload. Amount to upload: {totalJobCount}");
-
+        Console.WriteLine($"[{jobsCreatedCount}:{totalJobCount}] Beginning bulk upload. Amount to upload: {operations.Count}");
+    
         var bulkOperationResponse = await ExecuteTasksAsync(operations);
         Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
         Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
