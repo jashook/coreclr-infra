@@ -660,10 +660,12 @@ public class AzureDevopsTracking
             modelQueue.Enqueue(item);
         }
 
-        int modelConflicts = 0;
-        while (modelQueue.Count != 0)
+        Console.WriteLine("Uploading runtime models.");
+        Console.WriteLine($"Total count: {modelQueue.Count}");
+
+        List<RuntimeModel> modelsToUpload = new List<RuntimeModel>();
+        foreach (var model in modelQueue)
         {
-            var model = modelQueue.Dequeue();
             model.Id = model.BuildNumber;
 
             foreach (var item in model.Jobs)
@@ -678,31 +680,82 @@ public class AzureDevopsTracking
             // Zero out the data for the jobs, they will be uploaded seperately
             model.Jobs = null;
 
-            try
+            modelsToUpload.Add(model);
+        }
+
+        var runtimeRetries = new List<Task<OperationResponse<RuntimeModel>>>();
+        int runtimeCreatedCount = 1;
+        int runtimetotalJobCount = modelsToUpload.Count;
+
+        // <BulkCreate>
+        List<Task<OperationResponse<RuntimeModel>>> runtimeOperations = new List<Task<OperationResponse<RuntimeModel>>>(runtimetotalJobCount);
+        foreach (RuntimeModel document in modelsToUpload)
+        {
+            runtimeOperations.Add(RuntimeContainer.CreateItemAsync<RuntimeModel>(document, new PartitionKey(document.BuildReasonString)).CaptureOperationResponse(document));
+        }
+        // </BulkCreate>
+
+        Console.WriteLine($"Beginning bulk upload. Amount to upload: {runtimetotalJobCount}");
+
+        BulkOperationResponse<RuntimeModel> runtimeBulkOperationResponse = await ExecuteTasksAsync(runtimeOperations);
+        Console.WriteLine($"Bulk update operation finished in {runtimeBulkOperationResponse.TotalTimeTaken}");
+        Console.WriteLine($"Consumed {runtimeBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+        Console.WriteLine($"Created {runtimeBulkOperationResponse.SuccessfulDocuments} documents");
+        Console.WriteLine($"Failed {runtimeBulkOperationResponse.Failures.Count} documents");
+        if (runtimeBulkOperationResponse.Failures.Count > 0)
+        {
+            Console.WriteLine($"First failed sample document {runtimeBulkOperationResponse.Failures[0].Item1.Id} - {runtimeBulkOperationResponse.Failures[0].Item2}");
+
+
+            foreach (var item in runtimeBulkOperationResponse.Failures)
             {
-                await RuntimeContainer.CreateItemAsync<RuntimeModel>(model, new PartitionKey(model.BuildReasonString));
-            }
-            catch (Exception e)
-            {
-                ++modelConflicts;
+                runtimeRetries.Add(RuntimeContainer.CreateItemAsync<RuntimeModel>(item.Item1, new PartitionKey(item.Item1.BuildReasonString)).CaptureOperationResponse(item.Item1));
             }
         }
 
-        var retries = new List<Task<OperationResponse<AzureDevOpsJobModel>>>();
-        int jobsCreatedCount = 0;
+        runtimeCreatedCount += runtimeBulkOperationResponse.SuccessfulDocuments;
 
-        // <BulkDelete>
-        List<Task<OperationResponse<AzureDevOpsJobModel>>> operations = new List<Task<OperationResponse<AzureDevOpsJobModel>>>();
+        while (runtimeRetries.Count > 0)
+        {
+            runtimeBulkOperationResponse = await ExecuteTasksAsync(runtimeOperations);
+            Console.WriteLine($"Bulk update operation finished in {runtimeBulkOperationResponse.TotalTimeTaken}");
+            Console.WriteLine($"Consumed {runtimeBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+            Console.WriteLine($"Created {runtimeBulkOperationResponse.SuccessfulDocuments} documents");
+            Console.WriteLine($"Failed {runtimeBulkOperationResponse.Failures.Count} documents");
+            if (runtimeBulkOperationResponse.Failures.Count > 0)
+            {
+                Console.WriteLine($"First failed sample document {runtimeBulkOperationResponse.Failures[0].Item1.Id} - {runtimeBulkOperationResponse.Failures[0].Item2}");
+
+
+                foreach (var item in runtimeBulkOperationResponse.Failures)
+                {
+                    runtimeRetries.Add(RuntimeContainer.CreateItemAsync<RuntimeModel>(item.Item1, new PartitionKey(item.Item1.BuildReasonString)).CaptureOperationResponse(item.Item1));
+                }
+            }
+
+            runtimeCreatedCount += runtimeBulkOperationResponse.SuccessfulDocuments;
+        }
+
+        // Job uploads
+
+        var retries = new List<Task<OperationResponse<AzureDevOpsJobModel>>>();
+        int jobsCreatedCount = 1;
+        int totalJobCount = jobQueue.Count;
+
+        // <BulkCreate>
+        List<Task<OperationResponse<AzureDevOpsJobModel>>> operations = new List<Task<OperationResponse<AzureDevOpsJobModel>>>(totalJobCount);
         foreach (AzureDevOpsJobModel document in jobQueue)
         {
             operations.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(document, new PartitionKey(document.Name)).CaptureOperationResponse(document));
         }
-        // </BulkDelete>
+        // </BulkCreate>
 
-        BulkOperationResponse<AzureDevOpsJobModel> bulkOperationResponse = await ExecuteTasksAsync(operations);
+        Console.WriteLine($"Beginning bulk upload. Amount to upload: {totalJobCount}");
+
+        var bulkOperationResponse = await ExecuteTasksAsync(operations);
         Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
         Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
-        Console.WriteLine($"Deleted {bulkOperationResponse.SuccessfulDocuments} documents");
+        Console.WriteLine($"Created {bulkOperationResponse.SuccessfulDocuments} documents");
         Console.WriteLine($"Failed {bulkOperationResponse.Failures.Count} documents");
         if (bulkOperationResponse.Failures.Count > 0)
         {
@@ -717,28 +770,25 @@ public class AzureDevopsTracking
 
         jobsCreatedCount += bulkOperationResponse.SuccessfulDocuments;
 
-        int itemNumber = 1;
-        int totalCount = jobQueue.Count;
-        while (jobQueue.Count != 0)
+        while (retries.Count > 0)
         {
-            var jobModel = jobQueue.Dequeue();
-
-            var unModifiedId = jobModel.Id;
-            int conflictCount = 1;
-            try
+            bulkOperationResponse = await ExecuteTasksAsync(operations);
+            Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
+            Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+            Console.WriteLine($"Created {bulkOperationResponse.SuccessfulDocuments} documents");
+            Console.WriteLine($"Failed {bulkOperationResponse.Failures.Count} documents");
+            if (bulkOperationResponse.Failures.Count > 0)
             {
-                Console.WriteLine($"[{itemNumber++}:{totalCount}] Uploading job.");
-                await JobContainer.CreateItemAsync<AzureDevOpsJobModel>(jobModel, new PartitionKey(jobModel.Name));
-            }
-            catch (Exception e)
-            {
-                // Unable to upload the item, keep trying.
+                Console.WriteLine($"First failed sample document {bulkOperationResponse.Failures[0].Item1.Id} - {bulkOperationResponse.Failures[0].Item2}");
 
-                jobModel.Id = $"{unModifiedId}-{conflictCount++}";
-                jobQueue.Enqueue(jobModel);
 
-                ++conflicts;
+                foreach (var item in bulkOperationResponse.Failures)
+                {
+                    retries.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(item.Item1, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
+                }
             }
+
+            jobsCreatedCount += bulkOperationResponse.SuccessfulDocuments;
         }
     }
 
@@ -762,8 +812,8 @@ public class AzureDevopsTracking
         ContainerProperties runtimeContainerProperties = new ContainerProperties(RuntimeContainerName, partitionKeyPath: "/BuildReasonString");
         ContainerProperties jobContainerProperties = new ContainerProperties(JobContainerName, partitionKeyPath: "/Name");
 
-        this.RuntimeContainer = await Db.CreateContainerIfNotExistsAsync(runtimeContainerProperties, throughput: 400);
-        this.JobContainer = await Db.CreateContainerIfNotExistsAsync(jobContainerProperties, throughput: 2000);
+        this.RuntimeContainer = await Db.CreateContainerIfNotExistsAsync(runtimeContainerProperties, throughput: 1000);
+        this.JobContainer = await Db.CreateContainerIfNotExistsAsync(jobContainerProperties, throughput: 3500);
     }
 
 }
