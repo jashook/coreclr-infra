@@ -688,6 +688,35 @@ public class AzureDevopsTracking
             }
         }
 
+        var retries = new List<Task<OperationResponse<AzureDevOpsJobModel>>>();
+        int jobsCreatedCount = 0;
+
+        // <BulkDelete>
+        List<Task<OperationResponse<AzureDevOpsJobModel>>> operations = new List<Task<OperationResponse<AzureDevOpsJobModel>>>();
+        foreach (AzureDevOpsJobModel document in jobQueue)
+        {
+            operations.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(document, new PartitionKey(document.Name)).CaptureOperationResponse(document));
+        }
+        // </BulkDelete>
+
+        BulkOperationResponse<AzureDevOpsJobModel> bulkOperationResponse = await ExecuteTasksAsync(operations);
+        Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
+        Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+        Console.WriteLine($"Deleted {bulkOperationResponse.SuccessfulDocuments} documents");
+        Console.WriteLine($"Failed {bulkOperationResponse.Failures.Count} documents");
+        if (bulkOperationResponse.Failures.Count > 0)
+        {
+            Console.WriteLine($"First failed sample document {bulkOperationResponse.Failures[0].Item1.Id} - {bulkOperationResponse.Failures[0].Item2}");
+
+
+            foreach (var item in bulkOperationResponse.Failures)
+            {
+                retries.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(item.Item1, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
+            }
+        }
+
+        jobsCreatedCount += bulkOperationResponse.SuccessfulDocuments;
+
         int itemNumber = 1;
         int totalCount = jobQueue.Count;
         while (jobQueue.Count != 0)
@@ -734,7 +763,7 @@ public class AzureDevopsTracking
         ContainerProperties jobContainerProperties = new ContainerProperties(JobContainerName, partitionKeyPath: "/Name");
 
         this.RuntimeContainer = await Db.CreateContainerIfNotExistsAsync(runtimeContainerProperties, throughput: 400);
-        this.JobContainer = await Db.CreateContainerIfNotExistsAsync(jobContainerProperties, throughput: 1000);
+        this.JobContainer = await Db.CreateContainerIfNotExistsAsync(jobContainerProperties, throughput: 2000);
     }
 
 }
