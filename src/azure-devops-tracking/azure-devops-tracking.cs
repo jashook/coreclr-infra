@@ -54,6 +54,44 @@ public class OperationResponse<T>
 }
 // </OperationResult>
 
+public class HelixWorkItemDetail
+{
+    public string DetailsUrl { get; set; }
+    public string Job { get; set; }
+    public string Name { get; set; }
+    public string State { get; set; }
+
+}
+
+public class HelixWorkItem
+{
+    public string FailureReason { get; set; }
+    public string Id { get; set; }
+    public string MachineName { get; set; }
+    public int ExitCode { get; set; }
+    public string ConsoleOutputUri { get; set; }
+    public List<Dictionary<string, string>> Errors { get; set; }
+    public List<Dictionary<string, string>> Warnings { get; set; }
+    public List<Dictionary<string, string>>  Logs { get; set; }
+    public List<Dictionary<string, string>>  Files { get; set; }
+    public string Job { get; set; }
+    public string Name { get; set; }
+}
+
+public class HelixWorkItemSummary
+{
+    public string FailureReason { get; set; }
+    public string QueueId { get; set; }
+    public string DetailsUrl { get; set; }
+    public string Name { get; set; }
+    public string Created { get; set; }
+    public string Finished { get; set; }
+    public string InitalWorkItemCount { get; set; }
+    public string Source { get; set; }
+    public string Type { get; set; }
+    public Dictionary<string, string> Properties { get; set; }
+}
+
 public static class TaskExtensions
 {
     // <CaptureOperationResult>
@@ -426,15 +464,73 @@ public class AzureDevopsTracking
 
                                 Debug.Assert(jobs.Count > 0);
 
+                                HelixSubmissionModel model = new HelixSubmissionModel();
+                                model.Passed = false;
+                                model.Queues = new List<string>();
+                                model.WorkItems = new List<HelixWorkItemModel>();
+
                                 foreach (var job in jobs)
                                 {
+                                    string summaryUri = $"{helixApiString}/{job}";
                                     string workitemsUri = $"{helixApiString}/{job}/workitems";
+                                    await HttpRequest(summaryUri, async (htmlResponse) =>
+                                    {
+                                        HelixWorkItemSummary summary = JsonConvert.DeserializeObject<HelixWorkItemSummary>(htmlResponse);
+
+                                        model.End = DateTime.Parse(summary.Finished);
+                                        model.Start = DateTime.Parse(summary.Created);
+                                        model.ElapsedTime = (model.End - model.Start).TotalSeconds;
+
+                                        model.Name = summary.Name;
+                                        model.Passed = false;
+                                        model.Queues.Add(summary.Properties["operatingSystem"]);
+                                        model.Source = summary.Source;
+                                        model.Type = summary.Type;
+                                    });
+
                                     await HttpRequest(workitemsUri, async (htmlResponse) =>
                                     {
                                         string workItemJson = htmlResponse;
-                                        JObject obj = JObject.Parse(workItemJson);
+                                        List<HelixWorkItemDetail> items = JsonConvert.DeserializeObject<List<HelixWorkItemDetail>>(workItemJson);
 
-                                        Debug.Assert(workItems != null);
+                                        Debug.Assert(workItemJson != null);
+
+                                        foreach (var item in items)
+                                        {
+                                            await HttpRequest(item.DetailsUrl, async (htmlResponse) =>
+                                            {
+                                                HelixWorkItem workItem = JsonConvert.DeserializeObject<HelixWorkItem>(htmlResponse);
+
+                                                HelixWorkItemModel workItemModel = new HelixWorkItemModel();
+                                                workItemModel.ExitCode = workItem.ExitCode;
+                                                workItemModel.MachineName = workItem.MachineName;
+                                                workItemModel.Name = workItem.Name;
+
+                                                string logUri = null;
+                                                foreach (var log in workItem.Logs)
+                                                {
+                                                    if (log["Module"] == "run_client.py")
+                                                    {
+                                                        logUri = log["Uri"];
+                                                        break;
+                                                    }
+                                                }
+
+                                                await HttpRequest(logUri, async (htmlResponse) =>
+                                                {
+                                                    string setupBeginStr = htmlResponse.Split(' ')[0];
+
+                                                    string[] lines = htmlResponse.Split('\n');
+
+                                                    string runtimeEndStr = lines[lines.Length - 1].Split(' ')[0];
+
+                                                    DateTime setupStartTime = DateTime.Parse(setupBeginStr);
+
+                                                    workItemModel.HelixWorkItemSetupBegin
+                                                }
+
+                                            });
+                                        }
                                     });
                                 }
                             }

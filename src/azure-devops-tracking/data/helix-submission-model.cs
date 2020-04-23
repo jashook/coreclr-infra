@@ -34,9 +34,16 @@ public class HelixWorkItemModel
 
 public class HelixSubmissionModel
 {
+    public double ElapsedTime { get; set; }
+    public DateTime End { get; set; }
+    public string Name { get; set; }
     public bool Passed { get; set; }
     public List<string> Queues { get; set; }
-    public HelixWorkItemModel WorkItems { get; set; }
+    public string Source { get; set; }
+    public DateTime Start { get; set; }
+    public string Type { get; set; }
+    public int WorkItemCount { get; set; }
+    public List<HelixWorkItemModel> WorkItems { get; set; }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
