@@ -143,29 +143,13 @@ public class AzureDevopsTracking
     // Private member variables.
     ////////////////////////////////////////////////////////////////////////////
 
-    private async Task HttpRequest(string location)
+    private async Task<string> HttpRequest(string location)
     {
-        using (WebClient client = new WebClient())
+        CancellationToken cancelToken = default(CancellationToken);
+        using (HttpClient client = new HttpClient())
         {
-            client.DownloadStringCompleted += new DownloadStringCompletedEventHandler((sender, eventArgs) => {
-                string text = eventArgs.Result;
-            });
-
-            await client.DownloadStringTaskAsync(new Uri(location));
-        }
-    }
-
-    private async Task HttpRequest(string location, Action<string> handleResponse)
-    {
-        using (WebClient client = new WebClient())
-        {
-            client.DownloadStringCompleted += new DownloadStringCompletedEventHandler((sender, eventArgs) => {
-                string text = eventArgs.Result;
-
-                handleResponse(text);
-            });
-
-            await client.DownloadStringTaskAsync(new Uri(location));
+            var response = await client.GetAsync(location, cancelToken);
+            return await response.Content.ReadAsStringAsync();
         }
     }
 
@@ -407,10 +391,7 @@ public class AzureDevopsTracking
 
                                 if (reDownloadConsole)
                                 {
-                                    await HttpRequest(step.ConsoleUri, async (htmlResponse) =>
-                                    {
-                                        step.Console = htmlResponse;
-                                    });
+                                    step.Console = await HttpRequest(step.ConsoleUri);
 
                                     updated = true;
 
@@ -463,75 +444,104 @@ public class AzureDevopsTracking
                                 }
 
                                 Debug.Assert(jobs.Count > 0);
-
-                                HelixSubmissionModel model = new HelixSubmissionModel();
-                                model.Passed = false;
-                                model.Queues = new List<string>();
-                                model.WorkItems = new List<HelixWorkItemModel>();
+                                step.HelixModel = new List<HelixSubmissionModel>();
 
                                 foreach (var job in jobs)
                                 {
+                                    HelixSubmissionModel model = new HelixSubmissionModel();
+                                    model.Passed = false;
+                                    model.Queues = new List<string>();
+
                                     string summaryUri = $"{helixApiString}/{job}";
                                     string workitemsUri = $"{helixApiString}/{job}/workitems";
-                                    await HttpRequest(summaryUri, async (htmlResponse) =>
+                                    
+                                    string summaryResponse = await HttpRequest(summaryUri);
+
+                                    HelixWorkItemSummary summary = JsonConvert.DeserializeObject<HelixWorkItemSummary>(summaryResponse);
+
+                                    model.End = DateTime.Parse(summary.Finished);
+                                    model.Start = DateTime.Parse(summary.Created);
+                                    model.ElapsedTime = (model.End - model.Start).TotalSeconds;
+
+                                    model.Name = summary.Name;
+                                    model.Passed = false;
+                                    model.Queues.Add(summary.Properties["operatingSystem"]);
+                                    model.Source = summary.Source;
+                                    model.Type = summary.Type;
+                                    model.WorkItems = new List<HelixWorkItemModel>();
+
+                                    string workItemDetailResponse = await HttpRequest(workitemsUri);
+
+                                    string workItemJson = workItemDetailResponse;
+                                    List<HelixWorkItemDetail> workItems = JsonConvert.DeserializeObject<List<HelixWorkItemDetail>>(workItemJson);
+
+                                    Debug.Assert(workItemJson != null);
+                                    model.WorkItemCount = workItems.Count;
+
+                                    foreach (var item in workItems)
                                     {
-                                        HelixWorkItemSummary summary = JsonConvert.DeserializeObject<HelixWorkItemSummary>(htmlResponse);
+                                        string workItemDetailsStr = await HttpRequest(item.DetailsUrl);
+                                        HelixWorkItem workItem = JsonConvert
+                                        .DeserializeObject<HelixWorkItem>(workItemDetailsStr);
 
-                                        model.End = DateTime.Parse(summary.Finished);
-                                        model.Start = DateTime.Parse(summary.Created);
-                                        model.ElapsedTime = (model.End - model.Start).TotalSeconds;
+                                        HelixWorkItemModel workItemModel = new HelixWorkItemModel();
+                                        workItemModel.ExitCode = workItem.ExitCode;
+                                        workItemModel.MachineName = workItem.MachineName;
+                                        workItemModel.Name = workItem.Name;
 
-                                        model.Name = summary.Name;
-                                        model.Passed = false;
-                                        model.Queues.Add(summary.Properties["operatingSystem"]);
-                                        model.Source = summary.Source;
-                                        model.Type = summary.Type;
-                                    });
-
-                                    await HttpRequest(workitemsUri, async (htmlResponse) =>
-                                    {
-                                        string workItemJson = htmlResponse;
-                                        List<HelixWorkItemDetail> items = JsonConvert.DeserializeObject<List<HelixWorkItemDetail>>(workItemJson);
-
-                                        Debug.Assert(workItemJson != null);
-
-                                        foreach (var item in items)
+                                        string logUri = null;
+                                        foreach (var log in workItem.Logs)
                                         {
-                                            await HttpRequest(item.DetailsUrl, async (htmlResponse) =>
+                                            if (log["Module"] == "run_client.py")
                                             {
-                                                HelixWorkItem workItem = JsonConvert.DeserializeObject<HelixWorkItem>(htmlResponse);
-
-                                                HelixWorkItemModel workItemModel = new HelixWorkItemModel();
-                                                workItemModel.ExitCode = workItem.ExitCode;
-                                                workItemModel.MachineName = workItem.MachineName;
-                                                workItemModel.Name = workItem.Name;
-
-                                                string logUri = null;
-                                                foreach (var log in workItem.Logs)
-                                                {
-                                                    if (log["Module"] == "run_client.py")
-                                                    {
-                                                        logUri = log["Uri"];
-                                                        break;
-                                                    }
-                                                }
-
-                                                await HttpRequest(logUri, async (htmlResponse) =>
-                                                {
-                                                    string setupBeginStr = htmlResponse.Split(' ')[0];
-
-                                                    string[] lines = htmlResponse.Split('\n');
-
-                                                    string runtimeEndStr = lines[lines.Length - 1].Split(' ')[0];
-
-                                                    DateTime setupStartTime = DateTime.Parse(setupBeginStr);
-
-                                                    workItemModel.HelixWorkItemSetupBegin
-                                                }
-
-                                            });
+                                                logUri = log["Uri"];
+                                                break;
+                                            }
                                         }
-                                    });
+
+                                        if (logUri != null)
+                                        {
+                                            Debug.Assert(logUri != null);
+
+                                            string helixRunnerLog = await HttpRequest(logUri);
+                                            string setupBeginStr = helixRunnerLog.Split('\t')[0];
+
+                                            string splitString = helixRunnerLog.Split("_execute_command")[0];
+                                            var splitStringLines = splitString.Split("\n");
+
+                                            string setupEndStr = splitStringLines[splitStringLines.Length - 1].Split('\t')[0];
+
+                                            setupBeginStr = Regex.Replace(setupBeginStr, @"\s+", "");
+                                            setupEndStr = Regex.Replace(setupEndStr, @"\s+", "");
+
+                                            DateTime setupStartTime = DateTime.Parse(setupBeginStr);
+                                            DateTime setupEndTime = DateTime.Parse(setupEndStr);
+
+                                            workItemModel.HelixWorkItemSetupBegin = setupStartTime;
+                                            workItemModel.HelixWorkItemSetupEnd = setupEndTime;
+
+                                            string runtimeSplitStr = helixRunnerLog.Split("_dump_file_upload")[0];
+                                            var runtimeSplitStrLines = runtimeSplitStr.Split('\n');
+
+                                            string runtimeEndStr = runtimeSplitStrLines[runtimeSplitStrLines.Length - 1].Split('\t')[0];
+
+                                            runtimeEndStr = Regex.Replace(runtimeEndStr, @"\s+", "");
+
+                                            DateTime runtimeEndTime = DateTime.Parse(runtimeEndStr);
+
+                                            workItemModel.RunBegin = setupEndTime;
+                                            workItemModel.RunEnd = runtimeEndTime;
+
+                                            workItemModel.ElapsedSetupTime = (workItemModel.HelixWorkItemSetupEnd - workItemModel.HelixWorkItemSetupBegin).TotalMilliseconds;
+                                            workItemModel.ElapsedRunTime = (workItemModel.RunEnd - workItemModel.RunBegin).TotalMilliseconds;
+
+                                            workItemModel.Console = await HttpRequest(workItem.ConsoleOutputUri);
+                                            model.WorkItems.Add(workItemModel);
+                                        }
+                                    }
+
+                                    step.HelixModel.Add(model);
+                                    updated = true;
                                 }
                             }
                         }
@@ -920,10 +930,7 @@ public class AzureDevopsTracking
                     
                     if (step.Name.Contains("Evaluate paths for"))
                     {
-                        await HttpRequest(step.ConsoleUri, async (htmlResponse) =>
-                        {
-                            step.Console = htmlResponse;
-                        });
+                        step.Console = await HttpRequest(step.ConsoleUri);
                     }
                 }
 
