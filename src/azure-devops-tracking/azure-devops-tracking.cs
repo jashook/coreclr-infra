@@ -186,6 +186,322 @@ public class AzureDevopsTracking
     // Public member methods
     ////////////////////////////////////////////////////////////////////////////
 
+    public async Task Recalculate(bool recalculatePipelineElapsedTime=false,
+                                  bool redownloadLogs=false,
+                                  bool force=false,
+                                  DateTime? begin=null,
+                                  DateTime? end=null)
+    {
+        if (recalculatePipelineElapsedTime)
+        {
+            int pipelineUpdateCount = 0;
+            int pipelineFailureCount = 0;
+            try
+            {
+                var queryable = RuntimeContainer.GetItemLinqQueryable<RuntimeModel>();
+
+                FeedIterator<RuntimeModel> iterator = null;
+                
+                if (begin != null && end != null)
+                {
+                    var query = queryable.Where(item => item.DateStart > begin && item.DateEnd < end);
+                    iterator = query.ToFeedIterator();
+                }
+                else if (begin != null)
+                {
+                    var query = queryable.Where(item => item.DateStart > begin);
+                    iterator = query.ToFeedIterator();
+                }
+                else if (end != null)
+                {
+                    var query = queryable.Where(item => item.DateEnd < end);
+                    iterator = query.ToFeedIterator();
+                }
+                else
+                {
+                    iterator = queryable.ToFeedIterator();
+                }
+
+                List<Task<OperationResponse<RuntimeModel>>> retries = new List<Task<OperationResponse<RuntimeModel>>>();
+
+                while (iterator.HasMoreResults)
+                {
+                    var cosmosResult = await iterator.ReadNextAsync();
+
+                    IEnumerable<RuntimeModel> items = cosmosResult.Take(cosmosResult.Resource.Count());
+
+                    // <BulkDelete>
+                    List<Task<OperationResponse<RuntimeModel>>> operations = new List<Task<OperationResponse<RuntimeModel>>>(items.Count());
+                    foreach (RuntimeModel document in items)
+                    {
+                        if (recalculatePipelineElapsedTime)
+                        {
+                            document.ElapsedTime = (long)((document.DateEnd - document.DateStart).TotalSeconds);
+                        }
+                        
+                        operations.Add(RuntimeContainer.ReplaceItemAsync<RuntimeModel>(document, document.Id, new PartitionKey(document.BuildReasonString)).CaptureOperationResponse(document));
+                    }
+                    // </BulkDelete>
+
+                    BulkOperationResponse<RuntimeModel> bulkOperationResponse = await ExecuteTasksAsync(operations);
+                    Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
+                    Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+                    Console.WriteLine($"Replaced {bulkOperationResponse.SuccessfulDocuments} documents");
+                    Console.WriteLine($"Failed {bulkOperationResponse.Failures.Count} documents");
+                    if (bulkOperationResponse.Failures.Count > 0)
+                    {
+                        Console.WriteLine($"First failed sample document {bulkOperationResponse.Failures[0].Item1.Id} - {bulkOperationResponse.Failures[0].Item2}");
+
+
+                        foreach (var item in bulkOperationResponse.Failures)
+                        {
+                            retries.Add(JobContainer.ReplaceItemAsync<RuntimeModel>(item.Item1, item.Item1.Id, new PartitionKey(item.Item1.BuildReasonString)).CaptureOperationResponse(item.Item1));
+                        }
+                    }
+
+                    pipelineUpdateCount += bulkOperationResponse.SuccessfulDocuments;
+                }
+
+                while (retries.Count > 0)
+                {
+                    BulkOperationResponse<RuntimeModel> bulkOperationResponse = await ExecuteTasksAsync(retries);
+                    Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
+                    Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+                    Console.WriteLine($"Replaced {bulkOperationResponse.SuccessfulDocuments} documents");
+                    Console.WriteLine($"Failed {bulkOperationResponse.Failures.Count} documents");
+                    if (bulkOperationResponse.Failures.Count > 0)
+                    {
+                        Console.WriteLine($"First failed sample document {bulkOperationResponse.Failures[0].Item1.Id} - {bulkOperationResponse.Failures[0].Item2}");
+
+
+                        foreach (var item in bulkOperationResponse.Failures)
+                        {
+                            retries.Add(JobContainer.ReplaceItemAsync<RuntimeModel>(item.Item1, item.Item1.Id, new PartitionKey(item.Item1.BuildReasonString)).CaptureOperationResponse(item.Item1));
+                        }
+                    }
+
+                    pipelineUpdateCount += bulkOperationResponse.SuccessfulDocuments;
+                }
+            }
+            catch (Exception e)
+            {
+                Console.Write(e);
+                ++pipelineFailureCount;
+            }
+        }
+        else if (redownloadLogs)
+        {
+            int jobUpdateCount = 0;
+            int jobFailureCount = 0;
+            try
+            {
+                var queryable = JobContainer.GetItemLinqQueryable<AzureDevOpsJobModel>();
+
+                FeedIterator<AzureDevOpsJobModel> iterator = null;
+                
+                if (begin != null && end != null)
+                {
+                    var query = queryable.Where(item => item.Result == TaskResult.Failed && item.DateStart > begin && item.DateEnd < end);
+                    iterator = query.ToFeedIterator();
+                }
+                else if (begin != null)
+                {
+                    var query = queryable.Where(item => item.Result == TaskResult.Failed && item.DateStart > begin);
+                    iterator = query.ToFeedIterator();
+                }
+                else if (end != null)
+                {
+                    var query = queryable.Where(item => item.Result == TaskResult.Failed &&  item.DateEnd < end);
+                    iterator = query.ToFeedIterator();
+                }
+                else
+                {
+                    iterator = queryable.ToFeedIterator();
+                }
+
+                List<Task<OperationResponse<AzureDevOpsJobModel>>> retries = new List<Task<OperationResponse<AzureDevOpsJobModel>>>();
+
+                while (iterator.HasMoreResults)
+                {
+                    var cosmosResult = await iterator.ReadNextAsync();
+
+                    IEnumerable<AzureDevOpsJobModel> items = cosmosResult.Take(cosmosResult.Resource.Count());
+
+                    int count = 1;
+
+                    // <BulkDelete>
+                    List<Task<OperationResponse<AzureDevOpsJobModel>>> operations = new List<Task<OperationResponse<AzureDevOpsJobModel>>>(items.Count());
+                    foreach (AzureDevOpsJobModel document in items)
+                    {
+                        if (count++ % 4 == 0 && operations.Count > 0)
+                        {
+                            BulkOperationResponse<AzureDevOpsJobModel> bulkOperationResponseInner = await ExecuteTasksAsync(operations);
+                            Console.WriteLine($"Bulk update operation finished in {bulkOperationResponseInner.TotalTimeTaken}");
+                            Console.WriteLine($"Consumed {bulkOperationResponseInner.TotalRequestUnitsConsumed} RUs in total");
+                            Console.WriteLine($"Replaced {bulkOperationResponseInner.SuccessfulDocuments} documents");
+                            Console.WriteLine($"Failed {bulkOperationResponseInner.Failures.Count} documents");
+
+                            operations.Clear();
+                            if (bulkOperationResponseInner.Failures.Count > 0)
+                            {
+                                Console.WriteLine($"First failed sample document {bulkOperationResponseInner.Failures[0].Item1.Id} - {bulkOperationResponseInner.Failures[0].Item2}");
+
+                                foreach (var item in bulkOperationResponseInner.Failures)
+                                {
+                                    retries.Add(JobContainer.ReplaceItemAsync<AzureDevOpsJobModel>(item.Item1, item.Item1.Id, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
+                                }
+                            }
+
+                            jobUpdateCount += bulkOperationResponseInner.SuccessfulDocuments;
+                        }
+
+                        bool updated = false;
+                        foreach (AzureDevOpsStepModel step in document.Steps)
+                        {
+                            if (step.ConsoleUri != null &&
+                                (step.Name == "Initialize containers" || step.Result == TaskResult.Failed))
+                            {
+                                bool reDownloadConsole = true;
+                                if (step.Console != null && force == false)
+                                {
+                                    reDownloadConsole = false;
+                                }
+
+                                if (reDownloadConsole)
+                                {
+                                    await HttpRequest(step.ConsoleUri, async (htmlResponse) =>
+                                    {
+                                        step.Console = htmlResponse;
+                                    });
+
+                                    updated = true;
+
+                                    if (step.Name.ToLower().Contains("helix"))
+                                    {
+                                        step.IsHelixSubmission = true;
+                                    }
+                                }
+                            }
+
+                            if (step.Console != null)
+                            {
+                                string lowerCase = step.Console.ToLower();
+                                bool isHelixSubmission = lowerCase.Contains("helix");
+
+                                if (step.IsHelixSubmission != isHelixSubmission)
+                                {
+                                    Debug.Assert(step.Console.Contains("Waiting for completion of job "));
+
+                                    step.IsHelixSubmission = isHelixSubmission;
+                                    updated = true;
+                                }
+                            }
+
+                            if (step.IsHelixSubmission)
+                            {
+                                string helixApiString = "https://helix.dot.net/api/2019-06-17/jobs/";
+
+                                if (step.Console == null)
+                                {
+                                    continue;
+                                }
+
+                                Debug.Assert(step.Console != null);
+
+                                // Parse the console uri for the workitems
+                                var split = step.Console.Split("Waiting for completion of job ");
+
+                                List<string> jobs = new List<string>();
+                                bool first = true;
+                                foreach (var item in split)
+                                {
+                                    if (first)
+                                    {
+                                        first = false;
+                                        continue;
+                                    }
+
+                                    jobs.Add(item.Split("\n")[0].Trim());
+                                }
+
+                                Debug.Assert(jobs.Count > 0);
+
+                                foreach (var job in jobs)
+                                {
+                                    string workitemsUri = $"{helixApiString}/{job}/workitems";
+                                    await HttpRequest(workitemsUri, async (htmlResponse) =>
+                                    {
+                                        string workItemJson = htmlResponse;
+                                        JObject obj = JObject.Parse(workItemJson);
+
+                                        Debug.Assert(workItems != null);
+                                    });
+                                }
+                            }
+                        }
+
+                        if (updated)
+                        {
+                            operations.Add(JobContainer.ReplaceItemAsync<AzureDevOpsJobModel>(document, document.Id, new PartitionKey(document.Name)).CaptureOperationResponse(document));
+                        }
+                    }
+                    // </BulkDelete>
+
+                    BulkOperationResponse<AzureDevOpsJobModel> bulkOperationResponse = null;
+
+                    if (operations.Count > 0)
+                    {
+                        bulkOperationResponse = await ExecuteTasksAsync(operations);
+                        Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
+                        Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+                        Console.WriteLine($"Replaced {bulkOperationResponse.SuccessfulDocuments} documents");
+                        Console.WriteLine($"Failed {bulkOperationResponse.Failures.Count} documents");
+                    }
+
+                    if (bulkOperationResponse != null)
+                    {
+                        if (bulkOperationResponse.Failures.Count > 0)
+                        {
+                            Console.WriteLine($"First failed sample document {bulkOperationResponse.Failures[0].Item1.Id} - {bulkOperationResponse.Failures[0].Item2}");
+
+                            foreach (var item in bulkOperationResponse.Failures)
+                            {
+                                retries.Add(JobContainer.ReplaceItemAsync<AzureDevOpsJobModel>(item.Item1, item.Item1.Id, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
+                            }
+                        }
+
+                        jobUpdateCount += bulkOperationResponse.SuccessfulDocuments;
+                    }
+                }
+
+                while (retries.Count > 0)
+                {
+                    BulkOperationResponse<AzureDevOpsJobModel> bulkOperationResponse = await ExecuteTasksAsync(retries);
+                    Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
+                    Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+                    Console.WriteLine($"Replaced {bulkOperationResponse.SuccessfulDocuments} documents");
+                    Console.WriteLine($"Failed {bulkOperationResponse.Failures.Count} documents");
+                    if (bulkOperationResponse.Failures.Count > 0)
+                    {
+                        Console.WriteLine($"First failed sample document {bulkOperationResponse.Failures[0].Item1.Id} - {bulkOperationResponse.Failures[0].Item2}");
+
+                        foreach (var item in bulkOperationResponse.Failures)
+                        {
+                            retries.Add(JobContainer.ReplaceItemAsync<AzureDevOpsJobModel>(item.Item1, item.Item1.Id, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
+                        }
+                    }
+
+                    jobUpdateCount += bulkOperationResponse.SuccessfulDocuments;
+                }
+            }
+            catch (Exception e)
+            {
+                Console.Write(e);
+                ++jobFailureCount;
+            }
+        }
+    }
+
     public async Task Remove(DateTime dateToStartRemoving)
     {
         int modelDeletedCount = 1;
@@ -446,7 +762,7 @@ public class AzureDevopsTracking
             model.BuildNumber = build.BuildNumber;
             model.DateEnd = DateTime.Parse(build.FinishTime);
             model.DateStart = DateTime.Parse(build.StartTime);
-            model.ElapsedTime = (model.DateEnd - model.DateStart).Seconds;
+            model.ElapsedTime = (long)((model.DateEnd - model.DateStart).TotalSeconds);
             model.BuildResult = build.Result;
             model.BuildNumber = build.BuildNumber;
             model.BuildReason = build.Reason;
@@ -655,6 +971,9 @@ public class AzureDevopsTracking
         Queue<RuntimeModel> modelQueue = new Queue<RuntimeModel>();
         Queue<AzureDevOpsJobModel> jobQueue = new Queue<AzureDevOpsJobModel>();
 
+        int runtimeConflicts = 0;
+        int jobConflicts = 0;
+
         foreach (var item in models)
         {
             modelQueue.Enqueue(item);
@@ -709,7 +1028,14 @@ public class AzureDevopsTracking
 
             foreach (var item in runtimeBulkOperationResponse.Failures)
             {
-                runtimeRetries.Add(RuntimeContainer.CreateItemAsync<RuntimeModel>(item.Item1, new PartitionKey(item.Item1.BuildReasonString)).CaptureOperationResponse(item.Item1));
+                if (((CosmosException)item.Item2).StatusCode != HttpStatusCode.Conflict)
+                {
+                    runtimeRetries.Add(RuntimeContainer.CreateItemAsync<RuntimeModel>(item.Item1, new PartitionKey(item.Item1.BuildReasonString)).CaptureOperationResponse(item.Item1));
+                }
+                else
+                {
+                    ++runtimeConflicts;
+                }
             }
         }
 
@@ -732,7 +1058,14 @@ public class AzureDevopsTracking
 
                 foreach (var item in runtimeBulkOperationResponse.Failures)
                 {
-                    runtimeRetries.Add(RuntimeContainer.CreateItemAsync<RuntimeModel>(item.Item1, new PartitionKey(item.Item1.BuildReasonString)).CaptureOperationResponse(item.Item1));
+                    if (((CosmosException)item.Item2).StatusCode != HttpStatusCode.Conflict)
+                    {
+                        runtimeRetries.Add(RuntimeContainer.CreateItemAsync<RuntimeModel>(item.Item1, new PartitionKey(item.Item1.BuildReasonString)).CaptureOperationResponse(item.Item1));
+                    }
+                    else
+                    {
+                        ++runtimeConflicts;
+                    }
                 }
             }
 
@@ -761,6 +1094,9 @@ public class AzureDevopsTracking
                 Console.WriteLine($"Consumed {sliceBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
                 Console.WriteLine($"Created {sliceBulkOperationResponse.SuccessfulDocuments} documents");
                 Console.WriteLine($"Failed {sliceBulkOperationResponse.Failures.Count} documents");
+
+                operations.Clear();
+
                 if (sliceBulkOperationResponse.Failures.Count > 0)
                 {
                     Console.WriteLine($"First failed sample document {sliceBulkOperationResponse.Failures[0].Item1.Id} - {sliceBulkOperationResponse.Failures[0].Item2}");
@@ -768,13 +1104,18 @@ public class AzureDevopsTracking
 
                     foreach (var item in sliceBulkOperationResponse.Failures)
                     {
-                        retries.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(item.Item1, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
+                        if (((CosmosException)item.Item2).StatusCode != HttpStatusCode.Conflict)
+                        {
+                            retries.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(item.Item1, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
+                        }
+                        else
+                        {
+                            ++jobConflicts;
+                        }
                     }
                 }
 
                 jobsCreatedCount += sliceBulkOperationResponse.SuccessfulDocuments;
-
-                operations.Clear();
             }
 
             operations.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(document, new PartitionKey(document.Name)).CaptureOperationResponse(document));
@@ -795,7 +1136,14 @@ public class AzureDevopsTracking
 
             foreach (var item in bulkOperationResponse.Failures)
             {
-                retries.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(item.Item1, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
+                if (((CosmosException)item.Item2).StatusCode != HttpStatusCode.Conflict)
+                {
+                    retries.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(item.Item1, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
+                }
+                else
+                {
+                    ++jobConflicts;
+                }
             }
         }
 
@@ -818,12 +1166,22 @@ public class AzureDevopsTracking
 
                 foreach (var item in bulkOperationResponse.Failures)
                 {
-                    retries.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(item.Item1, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
+                    if (((CosmosException)item.Item2).StatusCode != HttpStatusCode.Conflict)
+                    {
+                        retries.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(item.Item1, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
+                    }
+                    else
+                    {
+                        ++jobConflicts;
+                    }
                 }
             }
 
             jobsCreatedCount += bulkOperationResponse.SuccessfulDocuments;
         }
+
+        Console.WriteLine($"Uploaded runtimeModel: {runtimeCreatedCount} and jobs: {jobsCreatedCount}.");
+        Console.WriteLine($"Conflicts runtimeModel: {runtimeConflicts} and jobs: {jobConflicts}.");
     }
 
     ////////////////////////////////////////////////////////////////////////////

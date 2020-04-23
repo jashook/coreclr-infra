@@ -9,17 +9,13 @@
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "build",
-            "program": "${workspaceFolder}/src/azure-devops-tracking/bin/Debug/netcoreapp3.1/azure-devops-tracking.dll",
+            "program": "${workspaceFolder}/bin/Debug/netcoreapp3.1/azure-devops-tracking.dll",
             "args": [
-                //"--recreate-db"
-
-                // "--re-update",
-                // "--timespan",
-                // "-1d"
-
-                // "--recalculate-pipeline-elapsed-time"
+                "--redownload-logs",
+                "--timespan",
+                "-7d"
             ],
-            "cwd": "${workspaceFolder}/src/azure-devops-tracking",
+            "cwd": "${workspaceFolder}",
             "console": "internalConsole",
             "stopAtEntry": false
         },

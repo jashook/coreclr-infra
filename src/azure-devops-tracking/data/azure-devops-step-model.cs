@@ -38,6 +38,8 @@ public class AzureDevOpsStepModel
     public bool Skipped { get; set; }
 
     public bool IsHelixSubmission { get; set; }
+    
+    public HelixSubmissionModel HelixModel { get; set; }
 
     public string Machine { get; set; }
 

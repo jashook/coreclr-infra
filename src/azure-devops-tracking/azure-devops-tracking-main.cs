@@ -20,21 +20,36 @@ using Microsoft.Azure.Cosmos;
 
 public class AzureDevOpsTrackingMain
 {
-    public async static Task MainAsync(bool recreateDb = false, DateTime? date=null)
+    public async static Task MainAsync(bool recreateDb = false, 
+                                       DateTime? date=null,
+                                       bool recalculatePipelineElapsedTime=false,
+                                       bool redownloadLogs=false)
     {
         var tracker = new AzureDevopsTracking(recreateDb);
 
-        if (date != null)
+        if (!recalculatePipelineElapsedTime && !redownloadLogs)
         {
-            await tracker.Remove((DateTime)date);
-        }
+            if (date != null)
+            {
+                await tracker.Remove((DateTime)date);
+            }
 
-        await tracker.Update();
+            await tracker.Update();
+        }
+        else
+        {
+
+            await tracker.Recalculate(recalculatePipelineElapsedTime: recalculatePipelineElapsedTime,
+                                      redownloadLogs: redownloadLogs,
+                                      begin: date);
+        }
     }
 
     public static int Main(bool recreateDb=false,
                            bool reUpdate=false,
-                           string timespan=null)
+                           string timespan=null,
+                           bool recalculatePipelineElapsedTime=false,
+                           bool redownloadLogs=false)
     {
         if (reUpdate)
         {
@@ -71,6 +86,35 @@ public class AzureDevOpsTrackingMain
             }
 
             MainAsync(recreateDb, time).Wait();
+        }
+
+        else if (recalculatePipelineElapsedTime ||
+                 redownloadLogs)
+        {
+            DateTime time = DateTime.Now;
+
+            if (timespan.EndsWith('h'))
+            {
+                Debug.Assert(timespan.StartsWith('-'));
+
+                string amount = timespan.Substring(1, timespan.Length -2);
+                int parsedAmount = int.Parse(amount);
+
+                time = time.AddHours(-parsedAmount);
+            }
+            else if (timespan.EndsWith('d'))
+            {
+                Debug.Assert(timespan.StartsWith('-'));
+
+                string amount = timespan.Substring(1, timespan.Length -2);
+                int parsedAmount = int.Parse(amount);
+
+                time = time.AddDays(-parsedAmount);
+            }
+
+            MainAsync(recalculatePipelineElapsedTime: recalculatePipelineElapsedTime,
+                      redownloadLogs: redownloadLogs,
+                      date: time).Wait();
         }
 
         else

@@ -17,9 +17,26 @@ namespace models {
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+public class HelixWorkItemModel
+{
+    public string Console { get; set; }
+    public double ElapsedSetupTime { get; set; }
+    public double ElapsedRunTime { get; set; }
+    public int ExitCode { get; set; }
+    public DateTime HelixWorkItemSetupBegin { get; set; }
+    public DateTime HelixWorkItemSetupEnd { get; set; }
+    public string MachineName { get; set; }
+    public string Name { get; set; }
+    public DateTime RunBegin { get; set; }
+    public DateTime RunEnd { get; set; }
+    
+}
+
 public class HelixSubmissionModel
 {
-
+    public bool Passed { get; set; }
+    public List<string> Queues { get; set; }
+    public HelixWorkItemModel WorkItems { get; set; }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
