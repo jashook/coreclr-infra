@@ -33,27 +33,6 @@ using DevOps.Util;
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-// </ResponseType>
-public class BulkOperationResponse<T>
-{
-    public TimeSpan TotalTimeTaken { get; set; }
-    public int SuccessfulDocuments { get; set; } = 0;
-    public double TotalRequestUnitsConsumed { get; set; } = 0;
-
-    public IReadOnlyList<(T, Exception)> Failures { get; set; }
-}
-// </ResponseType>
-
-// <OperationResult>
-public class OperationResponse<T>
-{
-    public T Item { get; set; }
-    public double RequestUnitsConsumed { get; set; } = 0;
-    public bool IsSuccessful { get; set; }
-    public Exception CosmosException { get; set; }
-}
-// </OperationResult>
-
 public class HelixWorkItemDetail
 {
     public string DetailsUrl { get; set; }
@@ -92,47 +71,6 @@ public class HelixWorkItemSummary
     public Dictionary<string, string> Properties { get; set; }
 }
 
-public static class TaskExtensions
-{
-    // <CaptureOperationResult>
-    public static Task<OperationResponse<T>> CaptureOperationResponse<T>(this Task<ItemResponse<T>> task, T item)
-    {
-        return task.ContinueWith(itemResponse =>
-        {
-            if (itemResponse.IsCompletedSuccessfully)
-            {
-                return new OperationResponse<T>()
-                {
-                    Item = item,
-                    IsSuccessful = true,
-                    RequestUnitsConsumed = task.Result.RequestCharge
-                };
-            }
-
-            AggregateException innerExceptions = itemResponse.Exception.Flatten();
-            CosmosException cosmosException = innerExceptions.InnerExceptions.FirstOrDefault(innerEx => innerEx is CosmosException) as CosmosException;
-            if (cosmosException != null)
-            {
-                return new OperationResponse<T>()
-                {
-                    Item = item,
-                    RequestUnitsConsumed = cosmosException.RequestCharge,
-                    IsSuccessful = false,
-                    CosmosException = cosmosException
-                };
-            }
-
-            return new OperationResponse<T>()
-            {
-                Item = item,
-                IsSuccessful = false,
-                CosmosException = innerExceptions.InnerExceptions.FirstOrDefault()
-            };
-        });
-    }
-    // </CaptureOperationResult>
-}
-
 public class AzureDevopsTracking
 {
     ////////////////////////////////////////////////////////////////////////////
@@ -142,16 +80,6 @@ public class AzureDevopsTracking
     ////////////////////////////////////////////////////////////////////////////
     // Private member variables.
     ////////////////////////////////////////////////////////////////////////////
-
-    private async Task<string> HttpRequest(string location)
-    {
-        CancellationToken cancelToken = default(CancellationToken);
-        using (HttpClient client = new HttpClient())
-        {
-            var response = await client.GetAsync(location, cancelToken);
-            return await response.Content.ReadAsStringAsync();
-        }
-    }
 
     private static DevOpsServer _devopsServer;
     private DevOpsServer Server { 
@@ -187,10 +115,12 @@ public class AzureDevopsTracking
     private Database Db;
     private Container RuntimeContainer;
     private Container JobContainer;
+    private Container HelixContainer;
 
     private static readonly string DatabaseName = "coreclr-infra";
     private static readonly string RuntimeContainerName = "runtime-pipelines";
     private static readonly string JobContainerName = "runtime-jobs";
+    private static readonly string HelixContainerName = "helix-jobs";
 
     private static int conflicts = 0;
 
@@ -265,7 +195,7 @@ public class AzureDevopsTracking
                     }
                     // </BulkDelete>
 
-                    BulkOperationResponse<RuntimeModel> bulkOperationResponse = await ExecuteTasksAsync(operations);
+                    BulkOperationResponse<RuntimeModel> bulkOperationResponse = await Shared.ExecuteTasksAsync(operations);
                     Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
                     Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
                     Console.WriteLine($"Replaced {bulkOperationResponse.SuccessfulDocuments} documents");
@@ -286,7 +216,7 @@ public class AzureDevopsTracking
 
                 while (retries.Count > 0)
                 {
-                    BulkOperationResponse<RuntimeModel> bulkOperationResponse = await ExecuteTasksAsync(retries);
+                    BulkOperationResponse<RuntimeModel> bulkOperationResponse = await Shared.ExecuteTasksAsync(retries);
                     Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
                     Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
                     Console.WriteLine($"Replaced {bulkOperationResponse.SuccessfulDocuments} documents");
@@ -313,298 +243,31 @@ public class AzureDevopsTracking
         }
         else if (redownloadLogs)
         {
-            int jobUpdateCount = 0;
-            int jobFailureCount = 0;
-            try
+            var queryable = JobContainer.GetItemLinqQueryable<AzureDevOpsJobModel>();
+            FeedIterator<AzureDevOpsJobModel> iterator = null;
+            
+            if (begin != null && end != null)
             {
-                var queryable = JobContainer.GetItemLinqQueryable<AzureDevOpsJobModel>();
-
-                FeedIterator<AzureDevOpsJobModel> iterator = null;
-                
-                if (begin != null && end != null)
-                {
-                    var query = queryable.Where(item => item.Result == TaskResult.Failed && item.DateStart > begin && item.DateEnd < end);
-                    iterator = query.ToFeedIterator();
-                }
-                else if (begin != null)
-                {
-                    var query = queryable.Where(item => item.Result == TaskResult.Failed && item.DateStart > begin);
-                    iterator = query.ToFeedIterator();
-                }
-                else if (end != null)
-                {
-                    var query = queryable.Where(item => item.Result == TaskResult.Failed &&  item.DateEnd < end);
-                    iterator = query.ToFeedIterator();
-                }
-                else
-                {
-                    iterator = queryable.ToFeedIterator();
-                }
-
-                List<Task<OperationResponse<AzureDevOpsJobModel>>> retries = new List<Task<OperationResponse<AzureDevOpsJobModel>>>();
-
-                while (iterator.HasMoreResults)
-                {
-                    var cosmosResult = await iterator.ReadNextAsync();
-
-                    IEnumerable<AzureDevOpsJobModel> items = cosmosResult.Take(cosmosResult.Resource.Count());
-
-                    int count = 1;
-
-                    // <BulkDelete>
-                    List<Task<OperationResponse<AzureDevOpsJobModel>>> operations = new List<Task<OperationResponse<AzureDevOpsJobModel>>>(items.Count());
-                    foreach (AzureDevOpsJobModel document in items)
-                    {
-                        if (count++ % 4 == 0 && operations.Count > 0)
-                        {
-                            BulkOperationResponse<AzureDevOpsJobModel> bulkOperationResponseInner = await ExecuteTasksAsync(operations);
-                            Console.WriteLine($"Bulk update operation finished in {bulkOperationResponseInner.TotalTimeTaken}");
-                            Console.WriteLine($"Consumed {bulkOperationResponseInner.TotalRequestUnitsConsumed} RUs in total");
-                            Console.WriteLine($"Replaced {bulkOperationResponseInner.SuccessfulDocuments} documents");
-                            Console.WriteLine($"Failed {bulkOperationResponseInner.Failures.Count} documents");
-
-                            operations.Clear();
-                            if (bulkOperationResponseInner.Failures.Count > 0)
-                            {
-                                Console.WriteLine($"First failed sample document {bulkOperationResponseInner.Failures[0].Item1.Id} - {bulkOperationResponseInner.Failures[0].Item2}");
-
-                                foreach (var item in bulkOperationResponseInner.Failures)
-                                {
-                                    retries.Add(JobContainer.ReplaceItemAsync<AzureDevOpsJobModel>(item.Item1, item.Item1.Id, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
-                                }
-                            }
-
-                            jobUpdateCount += bulkOperationResponseInner.SuccessfulDocuments;
-                        }
-
-                        bool updated = false;
-                        foreach (AzureDevOpsStepModel step in document.Steps)
-                        {
-                            if (step.ConsoleUri != null &&
-                                (step.Name == "Initialize containers" || step.Result == TaskResult.Failed))
-                            {
-                                bool reDownloadConsole = true;
-                                if (step.Console != null && force == false)
-                                {
-                                    reDownloadConsole = false;
-                                }
-
-                                if (reDownloadConsole)
-                                {
-                                    step.Console = await HttpRequest(step.ConsoleUri);
-
-                                    updated = true;
-
-                                    if (step.Name.ToLower().Contains("helix"))
-                                    {
-                                        step.IsHelixSubmission = true;
-                                    }
-                                }
-                            }
-
-                            if (step.Console != null)
-                            {
-                                string lowerCase = step.Console.ToLower();
-                                bool isHelixSubmission = lowerCase.Contains("helix");
-
-                                if (step.IsHelixSubmission != isHelixSubmission)
-                                {
-                                    Debug.Assert(step.Console.Contains("Waiting for completion of job "));
-
-                                    step.IsHelixSubmission = isHelixSubmission;
-                                    updated = true;
-                                }
-                            }
-
-                            if (step.IsHelixSubmission)
-                            {
-                                string helixApiString = "https://helix.dot.net/api/2019-06-17/jobs/";
-
-                                if (step.Console == null)
-                                {
-                                    continue;
-                                }
-
-                                Debug.Assert(step.Console != null);
-
-                                // Parse the console uri for the workitems
-                                var split = step.Console.Split("Waiting for completion of job ");
-
-                                List<string> jobs = new List<string>();
-                                bool first = true;
-                                foreach (var item in split)
-                                {
-                                    if (first)
-                                    {
-                                        first = false;
-                                        continue;
-                                    }
-
-                                    jobs.Add(item.Split("\n")[0].Trim());
-                                }
-
-                                Debug.Assert(jobs.Count > 0);
-                                step.HelixModel = new List<HelixSubmissionModel>();
-
-                                foreach (var job in jobs)
-                                {
-                                    HelixSubmissionModel model = new HelixSubmissionModel();
-                                    model.Passed = false;
-                                    model.Queues = new List<string>();
-
-                                    string summaryUri = $"{helixApiString}/{job}";
-                                    string workitemsUri = $"{helixApiString}/{job}/workitems";
-                                    
-                                    string summaryResponse = await HttpRequest(summaryUri);
-
-                                    HelixWorkItemSummary summary = JsonConvert.DeserializeObject<HelixWorkItemSummary>(summaryResponse);
-
-                                    model.End = DateTime.Parse(summary.Finished);
-                                    model.Start = DateTime.Parse(summary.Created);
-                                    model.ElapsedTime = (model.End - model.Start).TotalSeconds;
-
-                                    model.Name = summary.Name;
-                                    model.Passed = false;
-                                    model.Queues.Add(summary.Properties["operatingSystem"]);
-                                    model.Source = summary.Source;
-                                    model.Type = summary.Type;
-                                    model.WorkItems = new List<HelixWorkItemModel>();
-
-                                    string workItemDetailResponse = await HttpRequest(workitemsUri);
-
-                                    string workItemJson = workItemDetailResponse;
-                                    List<HelixWorkItemDetail> workItems = JsonConvert.DeserializeObject<List<HelixWorkItemDetail>>(workItemJson);
-
-                                    Debug.Assert(workItemJson != null);
-                                    model.WorkItemCount = workItems.Count;
-
-                                    foreach (var item in workItems)
-                                    {
-                                        string workItemDetailsStr = await HttpRequest(item.DetailsUrl);
-                                        HelixWorkItem workItem = JsonConvert
-                                        .DeserializeObject<HelixWorkItem>(workItemDetailsStr);
-
-                                        HelixWorkItemModel workItemModel = new HelixWorkItemModel();
-                                        workItemModel.ExitCode = workItem.ExitCode;
-                                        workItemModel.MachineName = workItem.MachineName;
-                                        workItemModel.Name = workItem.Name;
-
-                                        string logUri = null;
-                                        foreach (var log in workItem.Logs)
-                                        {
-                                            if (log["Module"] == "run_client.py")
-                                            {
-                                                logUri = log["Uri"];
-                                                break;
-                                            }
-                                        }
-
-                                        if (logUri != null)
-                                        {
-                                            Debug.Assert(logUri != null);
-
-                                            string helixRunnerLog = await HttpRequest(logUri);
-                                            string setupBeginStr = helixRunnerLog.Split('\t')[0];
-
-                                            string splitString = helixRunnerLog.Split("_execute_command")[0];
-                                            var splitStringLines = splitString.Split("\n");
-
-                                            string setupEndStr = splitStringLines[splitStringLines.Length - 1].Split('\t')[0];
-
-                                            setupBeginStr = Regex.Replace(setupBeginStr, @"\s+", "");
-                                            setupEndStr = Regex.Replace(setupEndStr, @"\s+", "");
-
-                                            DateTime setupStartTime = DateTime.Parse(setupBeginStr);
-                                            DateTime setupEndTime = DateTime.Parse(setupEndStr);
-
-                                            workItemModel.HelixWorkItemSetupBegin = setupStartTime;
-                                            workItemModel.HelixWorkItemSetupEnd = setupEndTime;
-
-                                            string runtimeSplitStr = helixRunnerLog.Split("_dump_file_upload")[0];
-                                            var runtimeSplitStrLines = runtimeSplitStr.Split('\n');
-
-                                            string runtimeEndStr = runtimeSplitStrLines[runtimeSplitStrLines.Length - 1].Split('\t')[0];
-
-                                            runtimeEndStr = Regex.Replace(runtimeEndStr, @"\s+", "");
-
-                                            DateTime runtimeEndTime = DateTime.Parse(runtimeEndStr);
-
-                                            workItemModel.RunBegin = setupEndTime;
-                                            workItemModel.RunEnd = runtimeEndTime;
-
-                                            workItemModel.ElapsedSetupTime = (workItemModel.HelixWorkItemSetupEnd - workItemModel.HelixWorkItemSetupBegin).TotalMilliseconds;
-                                            workItemModel.ElapsedRunTime = (workItemModel.RunEnd - workItemModel.RunBegin).TotalMilliseconds;
-
-                                            workItemModel.Console = await HttpRequest(workItem.ConsoleOutputUri);
-                                            model.WorkItems.Add(workItemModel);
-                                        }
-                                    }
-
-                                    step.HelixModel.Add(model);
-                                    updated = true;
-                                }
-                            }
-                        }
-
-                        if (updated)
-                        {
-                            operations.Add(JobContainer.ReplaceItemAsync<AzureDevOpsJobModel>(document, document.Id, new PartitionKey(document.Name)).CaptureOperationResponse(document));
-                        }
-                    }
-                    // </BulkDelete>
-
-                    BulkOperationResponse<AzureDevOpsJobModel> bulkOperationResponse = null;
-
-                    if (operations.Count > 0)
-                    {
-                        bulkOperationResponse = await ExecuteTasksAsync(operations);
-                        Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
-                        Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
-                        Console.WriteLine($"Replaced {bulkOperationResponse.SuccessfulDocuments} documents");
-                        Console.WriteLine($"Failed {bulkOperationResponse.Failures.Count} documents");
-                    }
-
-                    if (bulkOperationResponse != null)
-                    {
-                        if (bulkOperationResponse.Failures.Count > 0)
-                        {
-                            Console.WriteLine($"First failed sample document {bulkOperationResponse.Failures[0].Item1.Id} - {bulkOperationResponse.Failures[0].Item2}");
-
-                            foreach (var item in bulkOperationResponse.Failures)
-                            {
-                                retries.Add(JobContainer.ReplaceItemAsync<AzureDevOpsJobModel>(item.Item1, item.Item1.Id, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
-                            }
-                        }
-
-                        jobUpdateCount += bulkOperationResponse.SuccessfulDocuments;
-                    }
-                }
-
-                while (retries.Count > 0)
-                {
-                    BulkOperationResponse<AzureDevOpsJobModel> bulkOperationResponse = await ExecuteTasksAsync(retries);
-                    Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
-                    Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
-                    Console.WriteLine($"Replaced {bulkOperationResponse.SuccessfulDocuments} documents");
-                    Console.WriteLine($"Failed {bulkOperationResponse.Failures.Count} documents");
-                    if (bulkOperationResponse.Failures.Count > 0)
-                    {
-                        Console.WriteLine($"First failed sample document {bulkOperationResponse.Failures[0].Item1.Id} - {bulkOperationResponse.Failures[0].Item2}");
-
-                        foreach (var item in bulkOperationResponse.Failures)
-                        {
-                            retries.Add(JobContainer.ReplaceItemAsync<AzureDevOpsJobModel>(item.Item1, item.Item1.Id, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
-                        }
-                    }
-
-                    jobUpdateCount += bulkOperationResponse.SuccessfulDocuments;
-                }
+                var query = queryable.Where(item => item.Result == TaskResult.Failed && item.DateStart > begin && item.DateEnd < end);
+                iterator = query.ToFeedIterator();
             }
-            catch (Exception e)
+            else if (begin != null)
             {
-                Console.Write(e);
-                ++jobFailureCount;
+                var query = queryable.Where(item => item.Result == TaskResult.Failed && item.DateStart > begin);
+                iterator = query.ToFeedIterator();
             }
+            else if (end != null)
+            {
+                var query = queryable.Where(item => item.Result == TaskResult.Failed &&  item.DateEnd < end);
+                iterator = query.ToFeedIterator();
+            }
+            else
+            {
+                iterator = queryable.ToFeedIterator();
+            }
+
+            JobIO io = new JobIO(Db);
+            await io.ReUploadData(iterator, force);
         }
     }
 
@@ -673,7 +336,7 @@ public class AzureDevopsTracking
                 }
                 // </BulkDelete>
 
-                BulkOperationResponse<AzureDevOpsJobModel> bulkOperationResponse = await ExecuteTasksAsync(operations);
+                BulkOperationResponse<AzureDevOpsJobModel> bulkOperationResponse = await Shared.ExecuteTasksAsync(operations);
                 Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
                 Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
                 Console.WriteLine($"Deleted {bulkOperationResponse.SuccessfulDocuments} documents");
@@ -694,7 +357,7 @@ public class AzureDevopsTracking
 
             while (retries.Count > 0)
             {
-                BulkOperationResponse<AzureDevOpsJobModel> bulkOperationResponse = await ExecuteTasksAsync(retries);
+                BulkOperationResponse<AzureDevOpsJobModel> bulkOperationResponse = await Shared.ExecuteTasksAsync(retries);
                 Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
                 Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
                 Console.WriteLine($"Deleted {bulkOperationResponse.SuccessfulDocuments} documents");
@@ -766,23 +429,6 @@ public class AzureDevopsTracking
     ////////////////////////////////////////////////////////////////////////////
     // Private member methods
     ////////////////////////////////////////////////////////////////////////////
-
-    private static async Task<BulkOperationResponse<T>> ExecuteTasksAsync<T>(IReadOnlyList<Task<OperationResponse<T>>> tasks)
-    {
-        // <WhenAll>
-        Stopwatch stopwatch = Stopwatch.StartNew();
-        await Task.WhenAll(tasks);
-        stopwatch.Stop();
-
-        return new BulkOperationResponse<T>()
-        {
-            TotalTimeTaken = stopwatch.Elapsed,
-            TotalRequestUnitsConsumed = tasks.Sum(task => task.Result.RequestUnitsConsumed),
-            SuccessfulDocuments = tasks.Count(task => task.Result.IsSuccessful),
-            Failures = tasks.Where(task => !task.Result.IsSuccessful).Select(task => (task.Result.Item, task.Result.CosmosException)).ToList()
-        };
-        // </WhenAll>
-    }
 
     private async Task<RuntimeModel> GetLastRunFromDb()
     {
@@ -930,7 +576,7 @@ public class AzureDevopsTracking
                     
                     if (step.Name.Contains("Evaluate paths for"))
                     {
-                        step.Console = await HttpRequest(step.ConsoleUri);
+                        step.Console = await Shared.HttpRequest(step.ConsoleUri);
                     }
                 }
 
@@ -1119,7 +765,7 @@ public class AzureDevopsTracking
 
         Console.WriteLine($"Beginning bulk upload. Amount to upload: {runtimetotalJobCount}");
 
-        BulkOperationResponse<RuntimeModel> runtimeBulkOperationResponse = await ExecuteTasksAsync(runtimeOperations);
+        BulkOperationResponse<RuntimeModel> runtimeBulkOperationResponse = await Shared.ExecuteTasksAsync(runtimeOperations);
         Console.WriteLine($"Bulk update operation finished in {runtimeBulkOperationResponse.TotalTimeTaken}");
         Console.WriteLine($"Consumed {runtimeBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
         Console.WriteLine($"Created {runtimeBulkOperationResponse.SuccessfulDocuments} documents");
@@ -1146,7 +792,7 @@ public class AzureDevopsTracking
 
         while (runtimeRetries.Count > 0)
         {
-            runtimeBulkOperationResponse = await ExecuteTasksAsync(runtimeOperations);
+            runtimeBulkOperationResponse = await Shared.ExecuteTasksAsync(runtimeOperations);
             Console.WriteLine($"Bulk update operation finished in {runtimeBulkOperationResponse.TotalTimeTaken}");
             Console.WriteLine($"Consumed {runtimeBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
             Console.WriteLine($"Created {runtimeBulkOperationResponse.SuccessfulDocuments} documents");
@@ -1192,7 +838,7 @@ public class AzureDevopsTracking
             {
                 Console.WriteLine($"[{jobsCreatedCount}:{totalJobCount}] Beginning bulk upload slice. Amount to upload: {sliceAmount}");
     
-                var sliceBulkOperationResponse = await ExecuteTasksAsync(operations);
+                var sliceBulkOperationResponse = await Shared.ExecuteTasksAsync(operations);
                 Console.WriteLine($"Bulk update operation finished in {sliceBulkOperationResponse.TotalTimeTaken}");
                 Console.WriteLine($"Consumed {sliceBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
                 Console.WriteLine($"Created {sliceBulkOperationResponse.SuccessfulDocuments} documents");
@@ -1227,7 +873,7 @@ public class AzureDevopsTracking
 
         Console.WriteLine($"[{jobsCreatedCount}:{totalJobCount}] Beginning bulk upload. Amount to upload: {operations.Count}");
     
-        var bulkOperationResponse = await ExecuteTasksAsync(operations);
+        var bulkOperationResponse = await Shared.ExecuteTasksAsync(operations);
         Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
         Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
         Console.WriteLine($"Created {bulkOperationResponse.SuccessfulDocuments} documents");
@@ -1254,7 +900,7 @@ public class AzureDevopsTracking
 
         while (retries.Count > 0)
         {
-            bulkOperationResponse = await ExecuteTasksAsync(operations);
+            bulkOperationResponse = await Shared.ExecuteTasksAsync(operations);
             Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
             Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
             Console.WriteLine($"Created {bulkOperationResponse.SuccessfulDocuments} documents");
@@ -1302,13 +948,16 @@ public class AzureDevopsTracking
         {
             await Db.GetContainer(RuntimeContainerName).DeleteContainerAsync();
             await Db.GetContainer(JobContainerName).DeleteContainerAsync();
+            await Db.GetContainer(HelixContainerName).DeleteContainerAsync();
         }
 
         ContainerProperties runtimeContainerProperties = new ContainerProperties(RuntimeContainerName, partitionKeyPath: "/BuildReasonString");
         ContainerProperties jobContainerProperties = new ContainerProperties(JobContainerName, partitionKeyPath: "/Name");
+        ContainerProperties helixContainerProperties = new ContainerProperties(HelixContainerName, partitionKeyPath: "/Name");
 
         this.RuntimeContainer = await Db.CreateContainerIfNotExistsAsync(runtimeContainerProperties, throughput: 1000);
         this.JobContainer = await Db.CreateContainerIfNotExistsAsync(jobContainerProperties, throughput: 3000);
+        this.HelixContainer = await Db.CreateContainerIfNotExistsAsync(helixContainerProperties, throughput: 1500);
     }
 
 }
