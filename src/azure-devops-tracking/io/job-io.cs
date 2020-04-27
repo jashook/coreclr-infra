@@ -57,7 +57,7 @@ public class JobIO
 
         // There is a ~2mb limit for size and there can be roughly 200 active
         // tasks at one time.
-        CapSize = (long)((1 * 1000 * 1000) * 1.5);
+        CapSize = (long)((1 * 1000 * 1000) * .75);
     }
 
     ////////////////////////////////////////////////////////////////////////////
