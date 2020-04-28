@@ -28,6 +28,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 using models;
+using ev27;
 using DevOps.Util;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -38,7 +39,7 @@ public class HelixIO
     // Constructor
     ////////////////////////////////////////////////////////////////////////////
 
-    public HelixIO(Container helixContainer, List<string> helixJobs, string jobName)
+    public HelixIO(object uploadLock, Container helixContainer, List<string> helixJobs, string jobName, string stepId)
     {
         HelixContainer = helixContainer;
         HelixJobs = helixJobs;
@@ -49,6 +50,7 @@ public class HelixIO
         SuccessfulDocumentCount = 0;
 
         JobName = jobName;
+        StepId = stepId;
 
         DocumentSize = 0;
         RetrySize = 0;
@@ -58,6 +60,25 @@ public class HelixIO
         // There is a ~2mb limit for size and there can be roughly 200 active
         // tasks at one time.
         CapSize = (long)((1 * 1000 * 1000) * 1.5);
+
+        if (!RunningUpload)
+        {
+            lock(uploadLock)
+            {
+                // Someone else could have beaten us in the lock
+                // if so do nothing.
+                if (!RunningUpload)
+                {
+                    RunningUpload = true;
+                    UploadQueue = new TreeQueue<HelixSubmissionModel>();
+
+                    UploadThread = new Thread (() => Upload(UploadQueue));
+                    UploadThread.Start();
+                }
+            }
+        }
+
+        Debug.Assert(UploadQueue != null);
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -73,8 +94,13 @@ public class HelixIO
     public Container HelixContainer { get; set; }
     public List<string> HelixJobs { get; set; }
     public string JobName { get; set; }
+    public string StepId { get; set; }
     public long RetrySize { get; set; }
     public int SuccessfulDocumentCount { get; set; }
+
+    private static bool RunningUpload { get; set; }
+    private static TreeQueue<HelixSubmissionModel> UploadQueue { get; set; }
+    private static Thread UploadThread { get; set; }
 
     ////////////////////////////////////////////////////////////////////////////
     // Member functions
@@ -110,6 +136,7 @@ public class HelixIO
             model.Source = summary.Source;
             model.Type = summary.Type;
             model.WorkItems = new List<HelixWorkItemModel>();
+            model.StepId = StepId;
 
             string workItemDetailResponse = await Shared.HttpRequest(workitemsUri);
 
@@ -282,7 +309,7 @@ public class HelixIO
 
                         workItemModel.JobName = JobName;
 
-                        await AddOption(workItemModel);
+                        await AddOperation(workItemModel);
 
                         var modelToAdd = new HelixWorkItemModel();
                         modelToAdd.Id = workItemModel.Id;
@@ -315,7 +342,16 @@ public class HelixIO
     // Helper functions
     ////////////////////////////////////////////////////////////////////////////
 
-    private async Task AddOption(HelixWorkItemModel document)
+    private void SubmitToUpload(HelixSubmissionModel model)
+    {
+        Queue.Enqueue(model);
+    }
+    
+    ////////////////////////////////////////////////////////////////////////////
+    // Upload
+    ////////////////////////////////////////////////////////////////////////////
+
+    private async Task AddOperation(HelixWorkItemModel document)
     {
         if (document.Console != null)
         {
@@ -339,7 +375,7 @@ public class HelixIO
         ++ ActiveTasks;
     }
 
-    private async Task AddRetryOption(HelixWorkItemModel document)
+    private async Task AddRetryOperation(HelixWorkItemModel document)
     {
         if (document.Console != null)
         {
@@ -430,6 +466,11 @@ public class HelixIO
 
         SuccessfulDocumentCount += helixBulkOperationResponse.SuccessfulDocuments;
         FailedDocumentCount += helixBulkOperationResponse.Failures.Count;
+    }
+
+    private static void Upload(TreeQueue<HelixSubmissionModel> queue)
+    {
+
     }
 
 }

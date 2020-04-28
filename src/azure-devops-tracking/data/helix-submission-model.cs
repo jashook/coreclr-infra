@@ -50,6 +50,7 @@ public class HelixSubmissionModel
     public double ElapsedTime { get; set; }
     public DateTime End { get; set; }
     public string JobName { get; set; }
+    public string StepId { get; set; }
     public string Name { get; set; }
     public bool Passed { get; set; }
     public List<string> Queues { get; set; }

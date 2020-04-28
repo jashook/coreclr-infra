@@ -21,6 +21,7 @@ namespace models {
 
 public class AzureDevOpsStepModel
 {
+    public string Id { get; set; }
     public DateTime DateStart { get; set; }
 
     public DateTime DateEnd { get; set; }

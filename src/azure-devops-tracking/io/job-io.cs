@@ -178,19 +178,18 @@ public class JobIO
                     jobs.Add(item.Split("\n")[0].Trim());
                 }
 
-                DateTime beginTime = DateTime.Now;
-                HelixIO io = new HelixIO(HelixContainer, jobs, step.Name);
-                step.HelixModel = await io.IngestData();
-                updated = true;
-
-                foreach (var model in step.HelixModel)
+                if (step.Id == null)
                 {
-                    foreach (HelixWorkItemModel workItemModel in model.WorkItems)
-                    {
-                        workItemModel.Console = null;
-                    }
+                    step.Id = Guid.NewGuid().ToString();
+                    updated = true;
                 }
 
+                DateTime beginTime = DateTime.Now;
+                HelixIO io = new HelixIO(HelixContainer, jobs, step.Name, step.Id);
+                await io.IngestData();
+                updated = true;
+
+                step.HelixModel = null;
                 DateTime endTime = DateTime.Now;
 
                 double totalSeconds = (endTime - beginTime).TotalSeconds;
