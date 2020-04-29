@@ -121,6 +121,7 @@ public class AzureDevopsTracking
     private static readonly string RuntimeContainerName = "runtime-pipelines";
     private static readonly string JobContainerName = "runtime-jobs";
     private static readonly string HelixContainerName = "helix-jobs";
+    private static object GlobalLock { get; set; }
 
     private static int conflicts = 0;
 
@@ -132,6 +133,8 @@ public class AzureDevopsTracking
     {
         SetupDatabase().Wait();
         SetupCollection(recreateDb).Wait();
+
+        GlobalLock = new object();
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -266,7 +269,7 @@ public class AzureDevopsTracking
                 iterator = queryable.ToFeedIterator();
             }
 
-            JobIO io = new JobIO(Db);
+            JobIO io = new JobIO(Db, GlobalLock);
             await io.ReUploadData(iterator, force);
         }
     }

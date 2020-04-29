@@ -7,6 +7,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -25,8 +26,6 @@ public class TreeQueue<T>
 
     public TreeQueue(int maxLeafSize = 500)
     {
-        AverageMsBetweenInserts = 0;
-        AverageMsBetweenRemoval = 0;
         MaxLeafQueueSize = maxLeafSize;
         
         EnqueueQueue = new T[MaxLeafQueueSize];
@@ -35,7 +34,7 @@ public class TreeQueue<T>
         EnqueueQueueSize = 0;
         DequeueQueueSize = 0;
 
-        TransportQueue = new List<T>();
+        TransportQueue = new Queue<T>();
         QueueLock = new Lock();
     }
 
@@ -43,8 +42,6 @@ public class TreeQueue<T>
     // Member variables
     ////////////////////////////////////////////////////////////////////////////
 
-    public long AverageMsBetweenInserts { get; set; }
-    public long AverageMsBetweenRemoval { get; set; }
     public int MaxLeafQueueSize { get; set; }
 
     private T[] EnqueueQueue { get; set; }
@@ -88,9 +85,9 @@ public class TreeQueue<T>
         // Under a lock, we can mess with Transport queue
         if (TransportQueue.Count > 0)
         {
-            for (long index = 0; index < MaxLeafQueueSize; ++index)
+            for (long index = 0; index < MaxLeafQueueSize - 1; ++index)
             {
-                DequeueQueue[index++] = TransportQueue.Dequeue();
+                DequeueQueue[index] = TransportQueue.Dequeue();
                 ++DequeueQueueSize;
             }
         }
@@ -132,7 +129,11 @@ public class TreeQueue<T>
             }
         } while (requireWaitCallback);
 
-        return DequeueQueue[DequeueQueueSize--];
+        Debug.Assert(DequeueQueueSize != 0);
+
+        var returnValue = DequeueQueue[DequeueQueueSize - 1];
+        --DequeueQueueSize;
+        return returnValue;
     }
 }
 

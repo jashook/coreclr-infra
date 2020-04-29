@@ -78,6 +78,8 @@ public class Shared
         }
     }
 
+    private static long HttpRequestCount = 0;
+
     public static async Task HttpRequest(string location, Func<string, Task<bool>> htmlResponse) 
     {
         CancellationToken cancelToken = default(CancellationToken);
@@ -87,9 +89,15 @@ public class Shared
             int retryCount = 5;
             do
             {
+                DateTime begin = DateTime.Now;
                 var response = await client.GetAsync(location, cancelToken);
                 var responseHtml = await response.Content.ReadAsStringAsync();
-                retry = await htmlResponse(responseHtml);
+                DateTime end = DateTime.Now;
+
+                double elapsedTime = (end - begin).TotalMilliseconds;
+                Console.WriteLine($"[HttpRequest: {++HttpRequestCount}]: Finished in {elapsedTime} milliseconds");
+
+                await Task.Run(async () => { retry = await htmlResponse(responseHtml); });
             } while (retry && --retryCount > 0);
 
             if (retry && retryCount < 0)

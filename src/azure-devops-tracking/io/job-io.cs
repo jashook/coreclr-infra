@@ -38,7 +38,7 @@ public class JobIO
     // Constructor
     ////////////////////////////////////////////////////////////////////////////
 
-    public JobIO(Database db)
+    public JobIO(Database db, object globalLock)
     {
         HelixContainer = db.GetContainer("helix-jobs");
         Container = db.GetContainer("runtime-jobs");
@@ -51,6 +51,8 @@ public class JobIO
         DocumentSize = 0;
         RetrySize = 0;
 
+        DownloadedJobs = 0;
+
         ActiveTasks = 0;
 
         Tasks = new List<Task>();
@@ -58,6 +60,8 @@ public class JobIO
         // There is a ~2mb limit for size and there can be roughly 200 active
         // tasks at one time.
         CapSize = (long)((1 * 1000 * 1000) * .75);
+
+        GlobalLock = globalLock;
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -66,6 +70,7 @@ public class JobIO
 
     public int ActiveTasks { get; set; }
     public long CapSize { get; set; }
+    public long DownloadedJobs { get; set; }
     public List<Task<OperationResponse<AzureDevOpsJobModel>>> CosmosOperations { get; set; }
     public List<Task<OperationResponse<AzureDevOpsJobModel>>> CosmosRetryOperations { get; set; }
     public long DocumentSize { get; set; }
@@ -76,6 +81,7 @@ public class JobIO
     public long RetrySize { get; set; }
     public int SuccessfulDocumentCount { get; set; }
     public List<Task> Tasks { get; set; }
+    public object GlobalLock  { get; set; }
 
     ////////////////////////////////////////////////////////////////////////////
     // Member functions
@@ -185,15 +191,25 @@ public class JobIO
                 }
 
                 DateTime beginTime = DateTime.Now;
-                HelixIO io = new HelixIO(HelixContainer, jobs, step.Name, step.Id);
-                await io.IngestData();
+                HelixIO io = new HelixIO(GlobalLock, HelixContainer, jobs, step.Name, step.Id);
+                step.HelixModel = await io.IngestData();
                 updated = true;
+
+                foreach (var item in step.HelixModel)
+                {
+                    foreach (var workItemModel in item.WorkItems)
+                    {
+                        workItemModel.Console = null;
+                    }
+                }
 
                 step.HelixModel = null;
                 DateTime endTime = DateTime.Now;
 
                 double totalSeconds = (endTime - beginTime).TotalSeconds;
-                Console.WriteLine($"Helix workItems: {totalSeconds}");
+                
+                Console.WriteLine("------------------------------------------------------");
+                Console.WriteLine($"[{++DownloadedJobs}]: Helix workItems: {totalSeconds}");
             }
         }
 

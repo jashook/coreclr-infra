@@ -41,25 +41,10 @@ public class HelixIO
 
     public HelixIO(object uploadLock, Container helixContainer, List<string> helixJobs, string jobName, string stepId)
     {
-        HelixContainer = helixContainer;
         HelixJobs = helixJobs;
-        CosmosOperations = new List<Task<OperationResponse<HelixWorkItemModel>>>();
-        CosmosRetryOperations = new List<Task<OperationResponse<HelixWorkItemModel>>>();
-
-        FailedDocumentCount = 0;
-        SuccessfulDocumentCount = 0;
 
         JobName = jobName;
         StepId = stepId;
-
-        DocumentSize = 0;
-        RetrySize = 0;
-
-        ActiveTasks = 0;
-
-        // There is a ~2mb limit for size and there can be roughly 200 active
-        // tasks at one time.
-        CapSize = (long)((1 * 1000 * 1000) * 1.5);
 
         if (!RunningUpload)
         {
@@ -69,8 +54,26 @@ public class HelixIO
                 // if so do nothing.
                 if (!RunningUpload)
                 {
+                    UploadLock = uploadLock;
+                
+                    CosmosOperations = new List<Task<OperationResponse<HelixWorkItemModel>>>();
+                    CosmosRetryOperations = new List<Task<OperationResponse<HelixWorkItemModel>>>();
+
+                    FailedDocumentCount = 0;
+                    SuccessfulDocumentCount = 0;
+
+                    DocumentSize = 0;
+                    RetrySize = 0;
+
+                    HelixContainer = helixContainer;
+
                     RunningUpload = true;
-                    UploadQueue = new TreeQueue<HelixSubmissionModel>();
+                    UploadQueue = new TreeQueue<HelixWorkItemModel>();
+
+                    // There is a ~2mb limit for size and there can be roughly 200 active
+                    // tasks at one time.
+                    CapSize = (long)((1 * 1000 * 1000) * 1.5);
+
 
                     UploadThread = new Thread (() => Upload(UploadQueue));
                     UploadThread.Start();
@@ -79,28 +82,32 @@ public class HelixIO
         }
 
         Debug.Assert(UploadQueue != null);
+        Debug.Assert(UploadLock != null);
     }
 
     ////////////////////////////////////////////////////////////////////////////
     // Member variables
     ////////////////////////////////////////////////////////////////////////////
 
-    public int ActiveTasks { get; set; }
-    public long CapSize { get; set; }
-    public List<Task<OperationResponse<HelixWorkItemModel>>> CosmosOperations { get; set; }
-    public List<Task<OperationResponse<HelixWorkItemModel>>> CosmosRetryOperations { get; set; }
-    public long DocumentSize { get; set; }
-    public int FailedDocumentCount { get; set; }
-    public Container HelixContainer { get; set; }
     public List<string> HelixJobs { get; set; }
     public string JobName { get; set; }
     public string StepId { get; set; }
-    public long RetrySize { get; set; }
-    public int SuccessfulDocumentCount { get; set; }
+
+
+    private static long CapSize { get; set; }
+    private static long DocumentSize { get; set; }
+    private static long RetrySize { get; set; }
+    private static int SuccessfulDocumentCount { get; set; }
+    private static int FailedDocumentCount { get; set; }
+    private static Container HelixContainer { get; set; }
+
+    private static List<Task<OperationResponse<HelixWorkItemModel>>> CosmosOperations { get; set; }
+    private static List<Task<OperationResponse<HelixWorkItemModel>>> CosmosRetryOperations { get; set; }
 
     private static bool RunningUpload { get; set; }
-    private static TreeQueue<HelixSubmissionModel> UploadQueue { get; set; }
+    private static TreeQueue<HelixWorkItemModel> UploadQueue { get; set; }
     private static Thread UploadThread { get; set; }
+    private static object UploadLock { get; set; }
 
     ////////////////////////////////////////////////////////////////////////////
     // Member functions
@@ -151,12 +158,6 @@ public class HelixIO
             List<Task> tasks = new List<Task>();
             foreach (var item in workItems)
             {
-                if (tasks.Count > 30)
-                {
-                    await Task.WhenAll(tasks);
-                    tasks = new List<Task>();
-                }
-
                 tasks.Add(Shared.HttpRequest(item.DetailsUrl, async (workItemDetailsStr) => {
                     if (workItemDetailsStr.Contains("An error has occurred."))
                     {
@@ -309,7 +310,7 @@ public class HelixIO
 
                         workItemModel.JobName = JobName;
 
-                        await AddOperation(workItemModel);
+                        SubmitToUpload(workItemModel);
 
                         var modelToAdd = new HelixWorkItemModel();
                         modelToAdd.Id = workItemModel.Id;
@@ -332,9 +333,6 @@ public class HelixIO
             await Task.WhenAll(tasks);
         }
 
-        await DrainCosmosOperations();
-        await DrainRetryOperations();
-
         return helixSubmissions;
     }
 
@@ -342,16 +340,19 @@ public class HelixIO
     // Helper functions
     ////////////////////////////////////////////////////////////////////////////
 
-    private void SubmitToUpload(HelixSubmissionModel model)
+    private void SubmitToUpload(HelixWorkItemModel model)
     {
-        Queue.Enqueue(model);
+        lock(UploadLock)
+        {
+            UploadQueue.Enqueue(model);
+        }
     }
     
     ////////////////////////////////////////////////////////////////////////////
     // Upload
     ////////////////////////////////////////////////////////////////////////////
 
-    private async Task AddOperation(HelixWorkItemModel document)
+    private static async Task AddOperation(HelixWorkItemModel document)
     {
         if (document.Console != null)
         {
@@ -371,11 +372,9 @@ public class HelixIO
             DocumentSize = 0;
             CosmosOperations = new List<Task<OperationResponse<HelixWorkItemModel>>>();
         }
-
-        ++ ActiveTasks;
     }
 
-    private async Task AddRetryOperation(HelixWorkItemModel document)
+    private static async Task AddRetryOperation(HelixWorkItemModel document)
     {
         if (document.Console != null)
         {
@@ -389,14 +388,10 @@ public class HelixIO
             RetrySize = 0;
             CosmosRetryOperations = new List<Task<OperationResponse<HelixWorkItemModel>>>();
         }
-
-        ++ ActiveTasks;
     }
 
-    private async Task DrainCosmosOperations()
+    private static async Task DrainCosmosOperations()
     {
-        ActiveTasks -= CosmosOperations.Count;
-
         List<Task<OperationResponse<HelixWorkItemModel>>> copy = new List<Task<OperationResponse<HelixWorkItemModel>>>();
 
         try
@@ -427,7 +422,7 @@ public class HelixIO
 
             foreach (var operationFailure in helixBulkOperationResponse.Failures)
             {
-                await AddRetryOption(operationFailure.Item1);
+                await AddRetryOperation(operationFailure.Item1);
             }
         }
 
@@ -435,10 +430,8 @@ public class HelixIO
         FailedDocumentCount += helixBulkOperationResponse.Failures.Count;
     }
 
-    private async Task DrainRetryOperations()
+    private static async Task DrainRetryOperations()
     {
-        ActiveTasks -= CosmosRetryOperations.Count;
-
         List<Task<OperationResponse<HelixWorkItemModel>>> copy = new List<Task<OperationResponse<HelixWorkItemModel>>>();
 
         foreach (var item in CosmosRetryOperations)
@@ -460,7 +453,7 @@ public class HelixIO
 
             foreach (var operationFailure in helixBulkOperationResponse.Failures)
             {
-                await AddRetryOption(operationFailure.Item1);
+                await AddRetryOperation(operationFailure.Item1);
             }
         }
 
@@ -468,9 +461,18 @@ public class HelixIO
         FailedDocumentCount += helixBulkOperationResponse.Failures.Count;
     }
 
-    private static void Upload(TreeQueue<HelixSubmissionModel> queue)
+    private static void Upload(TreeQueue<HelixWorkItemModel> queue)
     {
+        // This is the only consumer. We do not need to lock.
 
+        while (true)
+        {
+            HelixWorkItemModel model = queue.Dequeue(() => {
+                Thread.Sleep(5000);
+            });
+
+            AddOperation(model).Wait();
+        }
     }
 
 }
