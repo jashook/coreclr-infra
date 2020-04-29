@@ -579,7 +579,7 @@ public class AzureDevopsTracking
                     
                     if (step.Name.Contains("Evaluate paths for"))
                     {
-                        step.Console = await Shared.HttpRequest(step.ConsoleUri);
+                        step.Console = Shared.Get(step.ConsoleUri);
                     }
                 }
 

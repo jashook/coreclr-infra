@@ -39,50 +39,20 @@ public class HelixIO
     // Constructor
     ////////////////////////////////////////////////////////////////////////////
 
-    public HelixIO(object uploadLock, Container helixContainer, List<string> helixJobs, string jobName, string stepId)
+    public HelixIO(Container helixContainer, List<string> helixJobs, string jobName, string stepId)
     {
         HelixJobs = helixJobs;
 
         JobName = jobName;
         StepId = stepId;
 
-        if (!RunningUpload)
+        lock(UploadLock)
         {
-            lock(uploadLock)
+            if (Uploader == null)
             {
-                // Someone else could have beaten us in the lock
-                // if so do nothing.
-                if (!RunningUpload)
-                {
-                    UploadLock = uploadLock;
-                
-                    CosmosOperations = new List<Task<OperationResponse<HelixWorkItemModel>>>();
-                    CosmosRetryOperations = new List<Task<OperationResponse<HelixWorkItemModel>>>();
-
-                    FailedDocumentCount = 0;
-                    SuccessfulDocumentCount = 0;
-
-                    DocumentSize = 0;
-                    RetrySize = 0;
-
-                    HelixContainer = helixContainer;
-
-                    RunningUpload = true;
-                    UploadQueue = new TreeQueue<HelixWorkItemModel>();
-
-                    // There is a ~2mb limit for size and there can be roughly 200 active
-                    // tasks at one time.
-                    CapSize = (long)((1 * 1000 * 1000) * 1.5);
-
-
-                    UploadThread = new Thread (() => Upload(UploadQueue));
-                    UploadThread.Start();
-                }
+                Uploader = new CosmosUpload<HelixWorkItemModel>(GlobalLock, helixContainer, Queue);
             }
         }
-
-        Debug.Assert(UploadQueue != null);
-        Debug.Assert(UploadLock != null);
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -93,21 +63,10 @@ public class HelixIO
     public string JobName { get; set; }
     public string StepId { get; set; }
 
-
-    private static long CapSize { get; set; }
-    private static long DocumentSize { get; set; }
-    private static long RetrySize { get; set; }
-    private static int SuccessfulDocumentCount { get; set; }
-    private static int FailedDocumentCount { get; set; }
-    private static Container HelixContainer { get; set; }
-
-    private static List<Task<OperationResponse<HelixWorkItemModel>>> CosmosOperations { get; set; }
-    private static List<Task<OperationResponse<HelixWorkItemModel>>> CosmosRetryOperations { get; set; }
-
-    private static bool RunningUpload { get; set; }
-    private static TreeQueue<HelixWorkItemModel> UploadQueue { get; set; }
-    private static Thread UploadThread { get; set; }
-    private static object UploadLock { get; set; }
+    private static TreeQueue<HelixWorkItemModel> Queue = new TreeQueue<HelixWorkItemModel>();
+    private static CosmosUpload<HelixWorkItemModel> Uploader = null;
+    private static object UploadLock = new object();
+    private static object GlobalLock = new object();
 
     ////////////////////////////////////////////////////////////////////////////
     // Member functions
@@ -334,134 +293,7 @@ public class HelixIO
     {
         lock(UploadLock)
         {
-            UploadQueue.Enqueue(model);
-        }
-    }
-    
-    ////////////////////////////////////////////////////////////////////////////
-    // Upload
-    ////////////////////////////////////////////////////////////////////////////
-
-    private static async Task AddOperation(HelixWorkItemModel document)
-    {
-        if (document.Console != null)
-        {
-            if (document.Console.Length > 1000*1000)
-            {
-                document.Console = document.Console.Substring(0, 1000*1000);
-            }
-
-            DocumentSize += document.Console.Length;
-        }
-        
-        CosmosOperations.Add(HelixContainer.CreateItemAsync<HelixWorkItemModel>(document, new PartitionKey(document.Name)).CaptureOperationResponse(document));
-        
-        if (DocumentSize > CapSize || CosmosOperations.Count > 50)
-        {
-            await DrainCosmosOperations();
-            DocumentSize = 0;
-            CosmosOperations = new List<Task<OperationResponse<HelixWorkItemModel>>>();
-        }
-    }
-
-    private static async Task AddRetryOperation(HelixWorkItemModel document)
-    {
-        if (document.Console != null)
-        {
-            RetrySize += document.Console.Length;
-        }
-        CosmosRetryOperations.Add(HelixContainer.CreateItemAsync<HelixWorkItemModel>(document, new PartitionKey(document.Name)).CaptureOperationResponse(document));
-
-        if (RetrySize > CapSize || CosmosRetryOperations.Count > 50)
-        {
-            await DrainRetryOperations();
-            RetrySize = 0;
-            CosmosRetryOperations = new List<Task<OperationResponse<HelixWorkItemModel>>>();
-        }
-    }
-
-    private static async Task DrainCosmosOperations()
-    {
-        List<Task<OperationResponse<HelixWorkItemModel>>> copy = new List<Task<OperationResponse<HelixWorkItemModel>>>();
-
-        try
-        {
-            foreach (var item in CosmosOperations)
-            {
-                copy.Add(item);
-            }
-        }
-        catch (Exception e)
-        {
-            foreach (var item in CosmosOperations)
-            {
-                copy.Add(item);
-            }
-        }
-
-        CosmosOperations = new List<Task<OperationResponse<HelixWorkItemModel>>>();
-        BulkOperationResponse<HelixWorkItemModel> helixBulkOperationResponse = await Shared.ExecuteTasksAsync(copy);
-        Console.WriteLine($"Bulk update operation finished in {helixBulkOperationResponse.TotalTimeTaken}");
-        Console.WriteLine($"Consumed {helixBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
-        Console.WriteLine($"Created {helixBulkOperationResponse.SuccessfulDocuments} documents");
-        Console.WriteLine($"Failed {helixBulkOperationResponse.Failures.Count} documents");
-
-        if (helixBulkOperationResponse.Failures.Count > 0)
-        {
-            Console.WriteLine($"First failed sample document {helixBulkOperationResponse.Failures[0].Item1.Name} - {helixBulkOperationResponse.Failures[0].Item2}");
-
-            foreach (var operationFailure in helixBulkOperationResponse.Failures)
-            {
-                await AddRetryOperation(operationFailure.Item1);
-            }
-        }
-
-        SuccessfulDocumentCount += helixBulkOperationResponse.SuccessfulDocuments;
-        FailedDocumentCount += helixBulkOperationResponse.Failures.Count;
-    }
-
-    private static async Task DrainRetryOperations()
-    {
-        List<Task<OperationResponse<HelixWorkItemModel>>> copy = new List<Task<OperationResponse<HelixWorkItemModel>>>();
-
-        foreach (var item in CosmosRetryOperations)
-        {
-            copy.Add(item);
-        }
-
-        CosmosRetryOperations = new List<Task<OperationResponse<HelixWorkItemModel>>>();
-
-        BulkOperationResponse<HelixWorkItemModel> helixBulkOperationResponse = await Shared.ExecuteTasksAsync(copy);
-        Console.WriteLine($"Bulk update operation finished in {helixBulkOperationResponse.TotalTimeTaken}");
-        Console.WriteLine($"Consumed {helixBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
-        Console.WriteLine($"Created {helixBulkOperationResponse.SuccessfulDocuments} documents");
-        Console.WriteLine($"Failed {helixBulkOperationResponse.Failures.Count} documents");
-
-        if (helixBulkOperationResponse.Failures.Count > 0)
-        {
-            Console.WriteLine($"First failed sample document {helixBulkOperationResponse.Failures[0].Item1.Name} - {helixBulkOperationResponse.Failures[0].Item2}");
-
-            foreach (var operationFailure in helixBulkOperationResponse.Failures)
-            {
-                await AddRetryOperation(operationFailure.Item1);
-            }
-        }
-
-        SuccessfulDocumentCount += helixBulkOperationResponse.SuccessfulDocuments;
-        FailedDocumentCount += helixBulkOperationResponse.Failures.Count;
-    }
-
-    private static void Upload(TreeQueue<HelixWorkItemModel> queue)
-    {
-        // This is the only consumer. We do not need to lock.
-
-        while (true)
-        {
-            HelixWorkItemModel model = queue.Dequeue(() => {
-                Thread.Sleep(5000);
-            });
-
-            AddOperation(model).Wait();
+            Queue.Enqueue(model);
         }
     }
 

@@ -199,7 +199,7 @@ public class JobIO
                 }
 
                 DateTime beginTime = DateTime.Now;
-                HelixIO io = new HelixIO(GlobalLock, HelixContainer, jobs, step.Name, step.Id);
+                HelixIO io = new HelixIO(HelixContainer, jobs, step.Name, step.Id);
                 step.HelixModel = await io.IngestData();
                 updated = true;
 
