@@ -7,24 +7,14 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
-using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
 using Microsoft.Azure.Cosmos;
-using Microsoft.Azure.Cosmos.Linq;
-
-using Microsoft.Extensions.Configuration;
-
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
-
-using models;
-using DevOps.Util;
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -69,7 +59,20 @@ public class Shared
         // </WhenAll>
     }
 
-    public static async Task<string> HttpRequest(string location)
+    public static string Get(string uri)
+    {
+        HttpWebRequest request = (HttpWebRequest)WebRequest.Create(uri);
+        request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+
+        using(HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+        using(Stream stream = response.GetResponseStream())
+        using(StreamReader reader = new StreamReader(stream))
+        {
+            return reader.ReadToEnd();
+        }
+    }
+
+    public static async Task<string> HttpRequestAsync(string location)
     {
         using (HttpClient client = new HttpClient())
         {
@@ -80,7 +83,7 @@ public class Shared
 
     private static long HttpRequestCount = 0;
 
-    public static async Task HttpRequest(string location, Func<string, Task<bool>> htmlResponse) 
+    public static async Task HttpRequestAsync(string location, Func<string, Task<bool>> htmlResponse) 
     {
         CancellationToken cancelToken = default(CancellationToken);
         using (HttpClient client = new HttpClient())

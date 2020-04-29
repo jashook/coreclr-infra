@@ -23,9 +23,9 @@
                 // "--timespan",
                 // "-1d"
                 // "--recalculate-pipeline-elapsed-time",
-                "--redownload-logs",
-                "--timespan",
-                "-7d"
+                //"--redownload-logs",
+                //"--timespan",
+                //"-7d"
             ],
             "cwd": "${workspaceFolder}/src/azure-devops-tracking",
             "console": "internalConsole",

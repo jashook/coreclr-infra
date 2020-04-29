@@ -87,6 +87,14 @@ public class JobIO
     // Member functions
     ////////////////////////////////////////////////////////////////////////////
 
+    public async Task UploadData(List<AzureDevOpsJobModel> jobs)
+    {
+        foreach (var job in jobs)
+        {
+            
+        }
+    }
+
     public async Task ReUploadData(FeedIterator<AzureDevOpsJobModel> iterator, bool force)
     {
         int procCount = Environment.ProcessorCount;
@@ -134,7 +142,7 @@ public class JobIO
 
                 if (reDownloadConsole)
                 {
-                    step.Console = await Shared.HttpRequest(step.ConsoleUri);
+                    step.Console = Shared.Get(step.ConsoleUri);
 
                     updated = true;
 
