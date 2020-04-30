@@ -12,23 +12,14 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using System.Net;
-using System.Net.Http;
-using System.Text;
-using System.Text.RegularExpressions;
-using System.Threading;
 using System.Threading.Tasks;
 
 using Microsoft.Azure.Cosmos;
-using Microsoft.Azure.Cosmos.Linq;
-
-using Microsoft.Extensions.Configuration;
-
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 using models;
 using DevOps.Util;
+
+using ev27;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -38,50 +29,34 @@ public class JobIO
     // Constructor
     ////////////////////////////////////////////////////////////////////////////
 
-    public JobIO(Database db, object globalLock)
-    {
+    public JobIO(Database db)
+    {   
         HelixContainer = db.GetContainer("helix-jobs");
-        Container = db.GetContainer("runtime-jobs");
-        CosmosOperations = new List<Task<OperationResponse<AzureDevOpsJobModel>>>();
-        CosmosRetryOperations = new List<Task<OperationResponse<AzureDevOpsJobModel>>>();
-
-        FailedDocumentCount = 0;
-        SuccessfulDocumentCount = 0;
-
-        DocumentSize = 0;
-        RetrySize = 0;
 
         DownloadedJobs = 0;
 
-        ActiveTasks = 0;
+        lock(UploadLock)
+        {
+            if (Uploader == null)
+            {
+                Uploader = new CosmosUpload<AzureDevOpsJobModel>(GlobalLock, HelixContainer, Queue);
+            }
+        }
 
-        Tasks = new List<Task>();
-
-        // There is a ~2mb limit for size and there can be roughly 200 active
-        // tasks at one time.
-        CapSize = (long)((1 * 1000 * 1000) * .75);
-
-        GlobalLock = globalLock;
     }
 
     ////////////////////////////////////////////////////////////////////////////
     // Member variables
     ////////////////////////////////////////////////////////////////////////////
 
-    public int ActiveTasks { get; set; }
-    public long CapSize { get; set; }
+    private Container HelixContainer { get; set; }
     public long DownloadedJobs { get; set; }
-    public List<Task<OperationResponse<AzureDevOpsJobModel>>> CosmosOperations { get; set; }
-    public List<Task<OperationResponse<AzureDevOpsJobModel>>> CosmosRetryOperations { get; set; }
-    public long DocumentSize { get; set; }
-    public int FailedDocumentCount { get; set; }
-    public Container Container { get; set; }
-    public Container HelixContainer { get; set; }
     public List<string> Jobs { get; set; }
-    public long RetrySize { get; set; }
-    public int SuccessfulDocumentCount { get; set; }
-    public List<Task> Tasks { get; set; }
-    public object GlobalLock  { get; set; }
+
+    private static TreeQueue<AzureDevOpsJobModel> Queue = new TreeQueue<AzureDevOpsJobModel>(maxLeafSize: 50);
+    private static CosmosUpload<AzureDevOpsJobModel> Uploader = null;
+    private static object UploadLock = new object();
+    private static object GlobalLock = new object();
 
     ////////////////////////////////////////////////////////////////////////////
     // Member functions
@@ -89,15 +64,25 @@ public class JobIO
 
     public async Task UploadData(List<AzureDevOpsJobModel> jobs)
     {
-        foreach (var job in jobs)
+        List<Task> tasks = new List<Task>();
+        foreach (AzureDevOpsJobModel document in jobs)
         {
-            
+            tasks.Add(UploadDocument(document, true, false));
+
+            if (tasks.Count > 5)
+            {
+                await Task.WhenAll(tasks);
+            }
         }
+
+        await Task.WhenAll(tasks);
+        await Uploader.Finish();
     }
 
     public async Task ReUploadData(FeedIterator<AzureDevOpsJobModel> iterator, bool force)
     {
         int procCount = Environment.ProcessorCount;
+        List<Task> tasks = new List<Task>();
         while (iterator.HasMoreResults)
         {
             var cosmosResult = await iterator.ReadNextAsync();
@@ -105,220 +90,143 @@ public class JobIO
 
             foreach (AzureDevOpsJobModel document in items)
             {
-                Tasks.Add(ReplaceDocument(document, force));
+                tasks.Add(UploadDocument(document, false, force));
 
-                if (Tasks.Count > 5)
+                if (tasks.Count > 5)
                 {
-                    await Task.WhenAll(Tasks);
+                    await Task.WhenAll(tasks);
                 }
-
-                int i =0;
             }
 
-            await Task.WhenAll(Tasks);
+            await Task.WhenAll(tasks);
         }
-
-        await DrainCosmosOperations();
-        await DrainRetryOperations();
     }
 
     ////////////////////////////////////////////////////////////////////////////
     // Helper functions
     ////////////////////////////////////////////////////////////////////////////
 
-    private async Task ReplaceDocument(AzureDevOpsJobModel document, bool force)
+    private async Task UploadDocument(AzureDevOpsJobModel document, bool forceInsert, bool forceDownloadConsole)
     {
         bool updated = false;
+        List<Task> tasks = new List<Task>();
+        
         foreach (AzureDevOpsStepModel step in document.Steps)
         {
-            if (step.ConsoleUri != null &&
-                (step.Name == "Initialize containers" || step.Result == TaskResult.Failed))
-            {
-                bool reDownloadConsole = true;
-                if (step.Console != null && force == false)
+            tasks.Add(Task.Run(() => {
+                DateTime beginTime = DateTime.Now;
+                double elapsedUriDownloadTime = 0;
+                if ((step.ConsoleUri != null) && 
+                    ((forceDownloadConsole == true || 
+                    step.Result == TaskResult.Failed || 
+                    step.Name == "Initialize containers" ||
+                    step.Name.ToLower().Contains("helix"))))
                 {
-                    reDownloadConsole = false;
-                }
+                    if (step.Console != null && forceDownloadConsole == true)
+                    {
+                        updated = true;
+                    }
 
-                if (reDownloadConsole)
-                {
+                    DateTime beginUriDownload = DateTime.Now;
                     step.Console = Shared.Get(step.ConsoleUri);
-
-                    updated = true;
+                    DateTime endUriDownload = DateTime.Now;
+                    elapsedUriDownloadTime = (endUriDownload - beginUriDownload).TotalMilliseconds;
 
                     if (step.Name.ToLower().Contains("helix") && step.Console.Contains("Waiting for completion of job "))
                     {
                         step.IsHelixSubmission = true;
                     }
-                }
-            }
 
-            if (step.Console != null)
-            {
-                string lowerCase = step.Console.ToLower();
-                bool isHelixSubmission = lowerCase.Contains("helix") && step.Console.Contains("Waiting for completion of job ");
-
-                if (step.IsHelixSubmission != isHelixSubmission)
-                {
-                    Debug.Assert(step.Console.Contains("Waiting for completion of job "));
-
-                    step.IsHelixSubmission = isHelixSubmission;
-                    updated = true;
-                }
-            }
-
-            if (step.IsHelixSubmission && step.HelixModel == null)
-            {
-                if (step.Console == null)
-                {
-                    continue;
-                }
-
-                Debug.Assert(step.Console != null);
-
-                // Parse the console uri for the workitems
-                var split = step.Console.Split("Waiting for completion of job ");
-
-                List<string> jobs = new List<string>();
-                bool first = true;
-                foreach (var item in split)
-                {
-                    if (first)
+                    if (forceDownloadConsole != true && step.Result != TaskResult.Failed && step.Name != "Initialize containers" && !step.IsHelixSubmission)
                     {
-                        first = false;
-                        continue;
-                    }
-
-                    jobs.Add(item.Split("\n")[0].Trim());
-                }
-
-                if (step.Id == null)
-                {
-                    step.Id = Guid.NewGuid().ToString();
-                    updated = true;
-                }
-
-                DateTime beginTime = DateTime.Now;
-                HelixIO io = new HelixIO(HelixContainer, jobs, step.Name, step.Id);
-                step.HelixModel = await io.IngestData();
-                updated = true;
-
-                foreach (var item in step.HelixModel)
-                {
-                    foreach (var workItemModel in item.WorkItems)
-                    {
-                        workItemModel.Console = null;
+                        // We do not want to save console logs for successful jobs
+                        step.Console = null;
                     }
                 }
 
-                step.HelixModel = null;
+                if (step.IsHelixSubmission && step.HelixModel == null)
+                {
+                    if (step.Console == null)
+                    {
+                        return;
+                    }
+
+                    Debug.Assert(step.Console != null);
+
+                    // Parse the console uri for the workitems
+                    var split = step.Console.Split("Waiting for completion of job ");
+
+                    List<string> jobs = new List<string>();
+                    bool first = true;
+                    foreach (var item in split)
+                    {
+                        if (first)
+                        {
+                            first = false;
+                            continue;
+                        }
+
+                        jobs.Add(item.Split("\n")[0].Trim());
+                    }
+
+                    if (step.Id == null)
+                    {
+                        step.Id = Guid.NewGuid().ToString();
+                        updated = true;
+                    }
+
+                    DateTime helixBeginTime = DateTime.Now;
+                    HelixIO io = new HelixIO(HelixContainer, jobs, step.Name, step.Id);
+                    var task = io.IngestData();
+                    task.Wait();
+                    step.HelixModel = task.Result;
+                    updated = true;
+
+                    foreach (var item in step.HelixModel)
+                    {
+                        foreach (var workItemModel in item.WorkItems)
+                        {
+                            workItemModel.Console = null;
+                        }
+                    }
+
+                    step.HelixModel = null;
+                    DateTime helixEndTime = DateTime.Now;
+
+                    double totalSeconds = (helixEndTime - helixBeginTime).TotalMilliseconds;
+                    Console.WriteLine($"[{++DownloadedJobs}]: Helix workItems: {totalSeconds}");
+                }
+
                 DateTime endTime = DateTime.Now;
+                double elapsedTime = (endTime - beginTime).TotalMilliseconds;
 
-                double totalSeconds = (endTime - beginTime).TotalSeconds;
-                
-                Console.WriteLine("------------------------------------------------------");
-                Console.WriteLine($"[{++DownloadedJobs}]: Helix workItems: {totalSeconds}");
-            }
+                bool logAll = false;
+                if (elapsedTime > 1000 | logAll)
+                {
+                    Console.WriteLine($"[{step.Name}]: Processed in {elapsedTime}. Downloaded console in {elapsedUriDownloadTime}.");
+                }
+            }));
         }
 
-        if (updated)
+        DateTime jobStarted = DateTime.Now;
+        await Task.WhenAll(tasks);
+        DateTime jobEnded = DateTime.Now;
+
+        double elapsedJobTime = (jobEnded - jobStarted).TotalMilliseconds;
+
+        Console.WriteLine($"[Job] -- [{document.Name}]: Processed job in {elapsedJobTime}ms.");
+
+        if (updated || forceInsert)
         {
-            await ReplaceOperation(document);
+            SubmitToUpload(document);
         }
     }
 
-    private async Task ReplaceOperation(AzureDevOpsJobModel document)
+    private void SubmitToUpload(AzureDevOpsJobModel model)
     {
-        foreach (var step in document.Steps)
-        {
-            if (step.Console != null)
-            {
-                DocumentSize += step.Console.Length;
-            }
-        }
-
-        if (DocumentSize > CapSize || CosmosOperations.Count > 190)
-        {
-            int retryCount = CosmosOperations.Count;
-            await DrainCosmosOperations();
-            DocumentSize = 0;
-            CosmosOperations = new List<Task<OperationResponse<AzureDevOpsJobModel>>>();
-        }
-
-        CosmosOperations.Add(Container.ReplaceItemAsync<AzureDevOpsJobModel>(document, document.Id, new PartitionKey(document.Name)).CaptureOperationResponse(document));
-        ++ ActiveTasks;
+        // lock(UploadLock)
+        // {
+        //     Queue.Enqueue(model);
+        // }
     }
-
-    private async Task RetryReplaceOperation(AzureDevOpsJobModel document)
-    {
-        foreach (var step in document.Steps)
-        {
-            if (step.Console != null)
-            {
-                RetrySize += step.Console.Length;
-            }
-        }
-
-        if (RetrySize > CapSize || CosmosRetryOperations.Count > 50)
-        {
-            int retryCount = CosmosRetryOperations.Count;
-            await DrainRetryOperations();
-            RetrySize = 0;
-            CosmosRetryOperations = new List<Task<OperationResponse<AzureDevOpsJobModel>>>();
-        }
-
-        CosmosRetryOperations.Add(Container.ReplaceItemAsync<AzureDevOpsJobModel>(document, document.Id, new PartitionKey(document.Name)).CaptureOperationResponse(document));
-        ++ ActiveTasks;
-    }
-
-    private async Task DrainCosmosOperations()
-    {
-        ActiveTasks -= CosmosOperations.Count;
-
-        BulkOperationResponse<AzureDevOpsJobModel> helixBulkOperationResponse = await Shared.ExecuteTasksAsync(CosmosOperations);
-        Console.WriteLine($"Bulk update operation finished in {helixBulkOperationResponse.TotalTimeTaken}");
-        Console.WriteLine($"Consumed {helixBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
-        Console.WriteLine($"Created {helixBulkOperationResponse.SuccessfulDocuments} documents");
-        Console.WriteLine($"Failed {helixBulkOperationResponse.Failures.Count} documents");
-
-        CosmosOperations = new List<Task<OperationResponse<AzureDevOpsJobModel>>>();
-        if (helixBulkOperationResponse.Failures.Count > 0)
-        {
-            Console.WriteLine($"First failed sample document {helixBulkOperationResponse.Failures[0].Item1.Name} - {helixBulkOperationResponse.Failures[0].Item2}");
-
-            foreach (var operationFailure in helixBulkOperationResponse.Failures)
-            {
-                await RetryReplaceOperation(operationFailure.Item1);
-            }
-        }
-
-        SuccessfulDocumentCount += helixBulkOperationResponse.SuccessfulDocuments;
-        FailedDocumentCount += helixBulkOperationResponse.Failures.Count;
-    }
-
-    private async Task DrainRetryOperations()
-    {
-        ActiveTasks -= CosmosOperations.Count;
-
-        BulkOperationResponse<AzureDevOpsJobModel> helixBulkOperationResponse = await Shared.ExecuteTasksAsync(CosmosOperations);
-        Console.WriteLine($"Bulk update operation finished in {helixBulkOperationResponse.TotalTimeTaken}");
-        Console.WriteLine($"Consumed {helixBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
-        Console.WriteLine($"Created {helixBulkOperationResponse.SuccessfulDocuments} documents");
-        Console.WriteLine($"Failed {helixBulkOperationResponse.Failures.Count} documents");
-
-        CosmosOperations = new List<Task<OperationResponse<AzureDevOpsJobModel>>>();
-        if (helixBulkOperationResponse.Failures.Count > 0)
-        {
-            Console.WriteLine($"First failed sample document {helixBulkOperationResponse.Failures[0].Item1.Name} - {helixBulkOperationResponse.Failures[0].Item2}");
-
-            foreach (var operationFailure in helixBulkOperationResponse.Failures)
-            {
-                await RetryReplaceOperation(operationFailure.Item1);
-            }
-        }
-
-        SuccessfulDocumentCount += helixBulkOperationResponse.SuccessfulDocuments;
-        FailedDocumentCount += helixBulkOperationResponse.Failures.Count;
-    }
-
 }

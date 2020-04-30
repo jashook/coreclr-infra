@@ -34,6 +34,9 @@ public class TreeQueue<T>
         EnqueueQueueSize = 0;
         DequeueQueueSize = 0;
 
+        Finished = false;
+        Finishing = false;
+
         TransportQueue = new Queue<T>();
         QueueLock = new Lock();
     }
@@ -43,6 +46,8 @@ public class TreeQueue<T>
     ////////////////////////////////////////////////////////////////////////////
 
     public int MaxLeafQueueSize { get; set; }
+    private bool Finished { get; set; }
+    private bool Finishing { get; set; }
 
     private T[] EnqueueQueue { get; set; }
     private long EnqueueQueueSize { get; set; }
@@ -63,6 +68,14 @@ public class TreeQueue<T>
     public T Dequeue(Action waitCallback)
     {
         return _Dequeue(waitCallback);
+    }
+
+    public async Task Finish()
+    {
+        lock (QueueLock)
+        {
+            Finishing = true;
+        }
     }
 
     ////////////////////////////////////////////////////////////////////////////

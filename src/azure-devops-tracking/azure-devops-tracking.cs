@@ -121,7 +121,6 @@ public class AzureDevopsTracking
     private static readonly string RuntimeContainerName = "runtime-pipelines";
     private static readonly string JobContainerName = "runtime-jobs";
     private static readonly string HelixContainerName = "helix-jobs";
-    private static object GlobalLock { get; set; }
 
     private static int conflicts = 0;
 
@@ -133,8 +132,6 @@ public class AzureDevopsTracking
     {
         SetupDatabase().Wait();
         SetupCollection(recreateDb).Wait();
-
-        GlobalLock = new object();
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -269,7 +266,7 @@ public class AzureDevopsTracking
                 iterator = queryable.ToFeedIterator();
             }
 
-            JobIO io = new JobIO(Db, GlobalLock);
+            JobIO io = new JobIO(Db);
             await io.ReUploadData(iterator, force);
         }
     }
@@ -393,7 +390,7 @@ public class AzureDevopsTracking
 
     public async Task Update()
     {
-        int limit = 200;
+        int limit = 1;
 
         var lastRun = await GetLastRunFromDb();
 
@@ -575,7 +572,6 @@ public class AzureDevopsTracking
                 if (record.Log != null)
                 {
                     step.ConsoleUri = record.Log.Url;
-
                     
                     if (step.Name.Contains("Evaluate paths for"))
                     {
@@ -754,186 +750,196 @@ public class AzureDevopsTracking
             modelsToUpload.Add(model);
         }
 
-        var runtimeRetries = new List<Task<OperationResponse<RuntimeModel>>>();
-        int runtimeCreatedCount = 1;
-        int runtimetotalJobCount = modelsToUpload.Count;
+        // var runtimeRetries = new List<Task<OperationResponse<RuntimeModel>>>();
+        // int runtimeCreatedCount = 1;
+        // int runtimetotalJobCount = modelsToUpload.Count;
 
-        // <BulkCreate>
-        List<Task<OperationResponse<RuntimeModel>>> runtimeOperations = new List<Task<OperationResponse<RuntimeModel>>>(runtimetotalJobCount);
-        foreach (RuntimeModel document in modelsToUpload)
-        {
-            runtimeOperations.Add(RuntimeContainer.CreateItemAsync<RuntimeModel>(document, new PartitionKey(document.BuildReasonString)).CaptureOperationResponse(document));
-        }
-        // </BulkCreate>
+        // // <BulkCreate>
+        // List<Task<OperationResponse<RuntimeModel>>> runtimeOperations = new List<Task<OperationResponse<RuntimeModel>>>(runtimetotalJobCount);
+        // foreach (RuntimeModel document in modelsToUpload)
+        // {
+        //     runtimeOperations.Add(RuntimeContainer.CreateItemAsync<RuntimeModel>(document, new PartitionKey(document.BuildReasonString)).CaptureOperationResponse(document));
+        // }
+        // // </BulkCreate>
 
-        Console.WriteLine($"Beginning bulk upload. Amount to upload: {runtimetotalJobCount}");
+        // Console.WriteLine($"Beginning bulk upload. Amount to upload: {runtimetotalJobCount}");
 
-        BulkOperationResponse<RuntimeModel> runtimeBulkOperationResponse = await Shared.ExecuteTasksAsync(runtimeOperations);
-        Console.WriteLine($"Bulk update operation finished in {runtimeBulkOperationResponse.TotalTimeTaken}");
-        Console.WriteLine($"Consumed {runtimeBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
-        Console.WriteLine($"Created {runtimeBulkOperationResponse.SuccessfulDocuments} documents");
-        Console.WriteLine($"Failed {runtimeBulkOperationResponse.Failures.Count} documents");
-        if (runtimeBulkOperationResponse.Failures.Count > 0)
-        {
-            Console.WriteLine($"First failed sample document {runtimeBulkOperationResponse.Failures[0].Item1.Id} - {runtimeBulkOperationResponse.Failures[0].Item2}");
+        // BulkOperationResponse<RuntimeModel> runtimeBulkOperationResponse = await Shared.ExecuteTasksAsync(runtimeOperations);
+        // Console.WriteLine($"Bulk update operation finished in {runtimeBulkOperationResponse.TotalTimeTaken}");
+        // Console.WriteLine($"Consumed {runtimeBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+        // Console.WriteLine($"Created {runtimeBulkOperationResponse.SuccessfulDocuments} documents");
+        // Console.WriteLine($"Failed {runtimeBulkOperationResponse.Failures.Count} documents");
+        // if (runtimeBulkOperationResponse.Failures.Count > 0)
+        // {
+        //     Console.WriteLine($"First failed sample document {runtimeBulkOperationResponse.Failures[0].Item1.Id} - {runtimeBulkOperationResponse.Failures[0].Item2}");
 
 
-            foreach (var item in runtimeBulkOperationResponse.Failures)
-            {
-                if (((CosmosException)item.Item2).StatusCode != HttpStatusCode.Conflict)
-                {
-                    runtimeRetries.Add(RuntimeContainer.CreateItemAsync<RuntimeModel>(item.Item1, new PartitionKey(item.Item1.BuildReasonString)).CaptureOperationResponse(item.Item1));
-                }
-                else
-                {
-                    ++runtimeConflicts;
-                }
-            }
-        }
+        //     foreach (var item in runtimeBulkOperationResponse.Failures)
+        //     {
+        //         if (((CosmosException)item.Item2).StatusCode != HttpStatusCode.Conflict)
+        //         {
+        //             runtimeRetries.Add(RuntimeContainer.CreateItemAsync<RuntimeModel>(item.Item1, new PartitionKey(item.Item1.BuildReasonString)).CaptureOperationResponse(item.Item1));
+        //         }
+        //         else
+        //         {
+        //             ++runtimeConflicts;
+        //         }
+        //     }
+        // }
 
-        runtimeCreatedCount += runtimeBulkOperationResponse.SuccessfulDocuments;
+        // runtimeCreatedCount += runtimeBulkOperationResponse.SuccessfulDocuments;
 
-        while (runtimeRetries.Count > 0)
-        {
-            runtimeBulkOperationResponse = await Shared.ExecuteTasksAsync(runtimeOperations);
-            Console.WriteLine($"Bulk update operation finished in {runtimeBulkOperationResponse.TotalTimeTaken}");
-            Console.WriteLine($"Consumed {runtimeBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
-            Console.WriteLine($"Created {runtimeBulkOperationResponse.SuccessfulDocuments} documents");
-            Console.WriteLine($"Failed {runtimeBulkOperationResponse.Failures.Count} documents");
+        // while (runtimeRetries.Count > 0)
+        // {
+        //     runtimeBulkOperationResponse = await Shared.ExecuteTasksAsync(runtimeOperations);
+        //     Console.WriteLine($"Bulk update operation finished in {runtimeBulkOperationResponse.TotalTimeTaken}");
+        //     Console.WriteLine($"Consumed {runtimeBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+        //     Console.WriteLine($"Created {runtimeBulkOperationResponse.SuccessfulDocuments} documents");
+        //     Console.WriteLine($"Failed {runtimeBulkOperationResponse.Failures.Count} documents");
 
-            runtimeRetries.Clear();
+        //     runtimeRetries.Clear();
             
-            if (runtimeBulkOperationResponse.Failures.Count > 0)
-            {
-                Console.WriteLine($"First failed sample document {runtimeBulkOperationResponse.Failures[0].Item1.Id} - {runtimeBulkOperationResponse.Failures[0].Item2}");
+        //     if (runtimeBulkOperationResponse.Failures.Count > 0)
+        //     {
+        //         Console.WriteLine($"First failed sample document {runtimeBulkOperationResponse.Failures[0].Item1.Id} - {runtimeBulkOperationResponse.Failures[0].Item2}");
 
 
-                foreach (var item in runtimeBulkOperationResponse.Failures)
-                {
-                    if (((CosmosException)item.Item2).StatusCode != HttpStatusCode.Conflict)
-                    {
-                        runtimeRetries.Add(RuntimeContainer.CreateItemAsync<RuntimeModel>(item.Item1, new PartitionKey(item.Item1.BuildReasonString)).CaptureOperationResponse(item.Item1));
-                    }
-                    else
-                    {
-                        ++runtimeConflicts;
-                    }
-                }
-            }
+        //         foreach (var item in runtimeBulkOperationResponse.Failures)
+        //         {
+        //             if (((CosmosException)item.Item2).StatusCode != HttpStatusCode.Conflict)
+        //             {
+        //                 runtimeRetries.Add(RuntimeContainer.CreateItemAsync<RuntimeModel>(item.Item1, new PartitionKey(item.Item1.BuildReasonString)).CaptureOperationResponse(item.Item1));
+        //             }
+        //             else
+        //             {
+        //                 ++runtimeConflicts;
+        //             }
+        //         }
+        //     }
 
-            runtimeCreatedCount += runtimeBulkOperationResponse.SuccessfulDocuments;
-        }
+        //     runtimeCreatedCount += runtimeBulkOperationResponse.SuccessfulDocuments;
+        // }
 
         // Job uploads
 
-        var retries = new List<Task<OperationResponse<AzureDevOpsJobModel>>>();
-        int jobsCreatedCount = 1;
-        int totalJobCount = jobQueue.Count;
+        JobIO io = new JobIO(Db);
 
-        int jobCount = 1;
-        int sliceAmount = 100;
-
-        // <BulkCreate>
-        List<Task<OperationResponse<AzureDevOpsJobModel>>> operations = new List<Task<OperationResponse<AzureDevOpsJobModel>>>(totalJobCount);
-        foreach (AzureDevOpsJobModel document in jobQueue)
+        List<AzureDevOpsJobModel> jobs = new List<AzureDevOpsJobModel>();
+        foreach (var item in jobQueue)
         {
-            if (jobCount++ % sliceAmount == 0)
-            {
-                Console.WriteLine($"[{jobsCreatedCount}:{totalJobCount}] Beginning bulk upload slice. Amount to upload: {sliceAmount}");
-    
-                var sliceBulkOperationResponse = await Shared.ExecuteTasksAsync(operations);
-                Console.WriteLine($"Bulk update operation finished in {sliceBulkOperationResponse.TotalTimeTaken}");
-                Console.WriteLine($"Consumed {sliceBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
-                Console.WriteLine($"Created {sliceBulkOperationResponse.SuccessfulDocuments} documents");
-                Console.WriteLine($"Failed {sliceBulkOperationResponse.Failures.Count} documents");
-
-                operations.Clear();
-
-                if (sliceBulkOperationResponse.Failures.Count > 0)
-                {
-                    Console.WriteLine($"First failed sample document {sliceBulkOperationResponse.Failures[0].Item1.Id} - {sliceBulkOperationResponse.Failures[0].Item2}");
-
-
-                    foreach (var item in sliceBulkOperationResponse.Failures)
-                    {
-                        if (((CosmosException)item.Item2).StatusCode != HttpStatusCode.Conflict)
-                        {
-                            retries.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(item.Item1, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
-                        }
-                        else
-                        {
-                            ++jobConflicts;
-                        }
-                    }
-                }
-
-                jobsCreatedCount += sliceBulkOperationResponse.SuccessfulDocuments;
-            }
-
-            operations.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(document, new PartitionKey(document.Name)).CaptureOperationResponse(document));
-        }
-        // </BulkCreate>
-
-        Console.WriteLine($"[{jobsCreatedCount}:{totalJobCount}] Beginning bulk upload. Amount to upload: {operations.Count}");
-    
-        var bulkOperationResponse = await Shared.ExecuteTasksAsync(operations);
-        Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
-        Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
-        Console.WriteLine($"Created {bulkOperationResponse.SuccessfulDocuments} documents");
-        Console.WriteLine($"Failed {bulkOperationResponse.Failures.Count} documents");
-        if (bulkOperationResponse.Failures.Count > 0)
-        {
-            Console.WriteLine($"First failed sample document {bulkOperationResponse.Failures[0].Item1.Id} - {bulkOperationResponse.Failures[0].Item2}");
-
-
-            foreach (var item in bulkOperationResponse.Failures)
-            {
-                if (((CosmosException)item.Item2).StatusCode != HttpStatusCode.Conflict)
-                {
-                    retries.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(item.Item1, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
-                }
-                else
-                {
-                    ++jobConflicts;
-                }
-            }
+            jobs.Add(item);
         }
 
-        jobsCreatedCount += bulkOperationResponse.SuccessfulDocuments;
+        await io.UploadData(jobs);
 
-        while (retries.Count > 0)
-        {
-            bulkOperationResponse = await Shared.ExecuteTasksAsync(operations);
-            Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
-            Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
-            Console.WriteLine($"Created {bulkOperationResponse.SuccessfulDocuments} documents");
-            Console.WriteLine($"Failed {bulkOperationResponse.Failures.Count} documents");
+        // var retries = new List<Task<OperationResponse<AzureDevOpsJobModel>>>();
+        // int jobsCreatedCount = 1;
+        // int totalJobCount = jobQueue.Count;
+
+        // int jobCount = 1;
+        // int sliceAmount = 100;
+
+        // // <BulkCreate>
+        // List<Task<OperationResponse<AzureDevOpsJobModel>>> operations = new List<Task<OperationResponse<AzureDevOpsJobModel>>>(totalJobCount);
+        // foreach (AzureDevOpsJobModel document in jobQueue)
+        // {
+        //     if (jobCount++ % sliceAmount == 0)
+        //     {
+        //         Console.WriteLine($"[{jobsCreatedCount}:{totalJobCount}] Beginning bulk upload slice. Amount to upload: {sliceAmount}");
+    
+        //         var sliceBulkOperationResponse = await Shared.ExecuteTasksAsync(operations);
+        //         Console.WriteLine($"Bulk update operation finished in {sliceBulkOperationResponse.TotalTimeTaken}");
+        //         Console.WriteLine($"Consumed {sliceBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+        //         Console.WriteLine($"Created {sliceBulkOperationResponse.SuccessfulDocuments} documents");
+        //         Console.WriteLine($"Failed {sliceBulkOperationResponse.Failures.Count} documents");
+
+        //         operations.Clear();
+
+        //         if (sliceBulkOperationResponse.Failures.Count > 0)
+        //         {
+        //             Console.WriteLine($"First failed sample document {sliceBulkOperationResponse.Failures[0].Item1.Id} - {sliceBulkOperationResponse.Failures[0].Item2}");
+
+
+        //             foreach (var item in sliceBulkOperationResponse.Failures)
+        //             {
+        //                 if (((CosmosException)item.Item2).StatusCode != HttpStatusCode.Conflict)
+        //                 {
+        //                     retries.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(item.Item1, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
+        //                 }
+        //                 else
+        //                 {
+        //                     ++jobConflicts;
+        //                 }
+        //             }
+        //         }
+
+        //         jobsCreatedCount += sliceBulkOperationResponse.SuccessfulDocuments;
+        //     }
+
+        //     operations.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(document, new PartitionKey(document.Name)).CaptureOperationResponse(document));
+        // }
+        // // </BulkCreate>
+
+        // Console.WriteLine($"[{jobsCreatedCount}:{totalJobCount}] Beginning bulk upload. Amount to upload: {operations.Count}");
+    
+        // var bulkOperationResponse = await Shared.ExecuteTasksAsync(operations);
+        // Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
+        // Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+        // Console.WriteLine($"Created {bulkOperationResponse.SuccessfulDocuments} documents");
+        // Console.WriteLine($"Failed {bulkOperationResponse.Failures.Count} documents");
+        // if (bulkOperationResponse.Failures.Count > 0)
+        // {
+        //     Console.WriteLine($"First failed sample document {bulkOperationResponse.Failures[0].Item1.Id} - {bulkOperationResponse.Failures[0].Item2}");
+
+
+        //     foreach (var item in bulkOperationResponse.Failures)
+        //     {
+        //         if (((CosmosException)item.Item2).StatusCode != HttpStatusCode.Conflict)
+        //         {
+        //             retries.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(item.Item1, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
+        //         }
+        //         else
+        //         {
+        //             ++jobConflicts;
+        //         }
+        //     }
+        // }
+
+        // jobsCreatedCount += bulkOperationResponse.SuccessfulDocuments;
+
+        // while (retries.Count > 0)
+        // {
+        //     bulkOperationResponse = await Shared.ExecuteTasksAsync(operations);
+        //     Console.WriteLine($"Bulk update operation finished in {bulkOperationResponse.TotalTimeTaken}");
+        //     Console.WriteLine($"Consumed {bulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+        //     Console.WriteLine($"Created {bulkOperationResponse.SuccessfulDocuments} documents");
+        //     Console.WriteLine($"Failed {bulkOperationResponse.Failures.Count} documents");
             
-            retries.Clear();
+        //     retries.Clear();
 
-            if (bulkOperationResponse.Failures.Count > 0)
-            {
-                Console.WriteLine($"First failed sample document {bulkOperationResponse.Failures[0].Item1.Id} - {bulkOperationResponse.Failures[0].Item2}");
+        //     if (bulkOperationResponse.Failures.Count > 0)
+        //     {
+        //         Console.WriteLine($"First failed sample document {bulkOperationResponse.Failures[0].Item1.Id} - {bulkOperationResponse.Failures[0].Item2}");
 
 
-                foreach (var item in bulkOperationResponse.Failures)
-                {
-                    if (((CosmosException)item.Item2).StatusCode != HttpStatusCode.Conflict)
-                    {
-                        retries.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(item.Item1, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
-                    }
-                    else
-                    {
-                        ++jobConflicts;
-                    }
-                }
-            }
+        //         foreach (var item in bulkOperationResponse.Failures)
+        //         {
+        //             if (((CosmosException)item.Item2).StatusCode != HttpStatusCode.Conflict)
+        //             {
+        //                 retries.Add(JobContainer.CreateItemAsync<AzureDevOpsJobModel>(item.Item1, new PartitionKey(item.Item1.Name)).CaptureOperationResponse(item.Item1));
+        //             }
+        //             else
+        //             {
+        //                 ++jobConflicts;
+        //             }
+        //         }
+        //     }
 
-            jobsCreatedCount += bulkOperationResponse.SuccessfulDocuments;
-        }
+        //     jobsCreatedCount += bulkOperationResponse.SuccessfulDocuments;
+        // }
 
-        Console.WriteLine($"Uploaded runtimeModel: {runtimeCreatedCount} and jobs: {jobsCreatedCount}.");
-        Console.WriteLine($"Conflicts runtimeModel: {runtimeConflicts} and jobs: {jobConflicts}.");
+        // Console.WriteLine($"Uploaded runtimeModel: {runtimeCreatedCount} and jobs: {jobsCreatedCount}.");
+        // Console.WriteLine($"Conflicts runtimeModel: {runtimeConflicts} and jobs: {jobConflicts}.");
     }
 
     ////////////////////////////////////////////////////////////////////////////
