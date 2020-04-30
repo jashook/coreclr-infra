@@ -39,7 +39,7 @@ public class JobIO
         {
             if (Uploader == null)
             {
-                Uploader = new CosmosUpload<AzureDevOpsJobModel>(GlobalLock, HelixContainer, Queue);
+                Uploader = new CosmosUpload<AzureDevOpsJobModel>("[Azure Dev Ops Job Model Upload]", GlobalLock, HelixContainer, Queue, (AzureDevOpsJobModel document) => { return document.Name; });
             }
         }
 
@@ -62,20 +62,27 @@ public class JobIO
     // Member functions
     ////////////////////////////////////////////////////////////////////////////
 
-    public async Task UploadData(List<AzureDevOpsJobModel> jobs)
+    public async Task UploadData(Queue<AzureDevOpsJobModel> jobs)
     {
         List<Task> tasks = new List<Task>();
-        foreach (AzureDevOpsJobModel document in jobs)
+        int count = 0;
+        int total = jobs.Count;
+        while (jobs.Count > 0)
         {
+            AzureDevOpsJobModel document = jobs.Dequeue();
             tasks.Add(UploadDocument(document, true, false));
 
             if (tasks.Count > 5)
             {
                 await Task.WhenAll(tasks);
             }
+
+            count += 5;
+            Console.WriteLine($"[Job Count] - [{count}:{total}] - Finished");
         }
 
         await Task.WhenAll(tasks);
+        Console.WriteLine($"[Job Count] - [{total}:{total}] - Finished");
 
         HelixIO.SignalToFinish();
         Uploader.Finish();
@@ -130,7 +137,20 @@ public class JobIO
                     }
 
                     DateTime beginUriDownload = DateTime.Now;
-                    step.Console = Shared.Get(step.ConsoleUri, retryCount: 5);
+                    step.Console = null;
+
+                    if (step.Result == TaskResult.Failed)
+                    {
+                        try
+                        {
+                            step.Console = Shared.Get(step.ConsoleUri, retryCount: 5);
+                        }
+                        catch(Exception e)
+                        {
+                            // Unable to download console
+                        }
+                    }
+
                     DateTime endUriDownload = DateTime.Now;
                     elapsedUriDownloadTime = (endUriDownload - beginUriDownload).TotalMilliseconds;
 
@@ -177,26 +197,29 @@ public class JobIO
                         updated = true;
                     }
 
-                    DateTime helixBeginTime = DateTime.Now;
-                    HelixIO io = new HelixIO(HelixContainer, jobs, step.Name, step.Id);
-                    var task = io.IngestData();
-                    task.Wait();
-                    step.HelixModel = task.Result;
-                    updated = true;
-
-                    foreach (var item in step.HelixModel)
+                    if ((DateTime.Now - step.DateStart).Days <= 40)
                     {
-                        foreach (var workItemModel in item.WorkItems)
+                        DateTime helixBeginTime = DateTime.Now;
+                        HelixIO io = new HelixIO(HelixContainer, jobs, step.Name, step.Id);
+                        var task = io.IngestData();
+                        task.Wait();
+                        step.HelixModel = task.Result;
+                        updated = true;
+
+                        foreach (var item in step.HelixModel)
                         {
-                            workItemModel.Console = null;
+                            foreach (var workItemModel in item.WorkItems)
+                            {
+                                workItemModel.Console = null;
+                            }
                         }
+
+                        step.HelixModel = null;
+                        DateTime helixEndTime = DateTime.Now;
+
+                        double totalSeconds = (helixEndTime - helixBeginTime).TotalMilliseconds;
+                        Console.WriteLine($"[{++DownloadedJobs}]: Helix workItems: {totalSeconds}");
                     }
-
-                    step.HelixModel = null;
-                    DateTime helixEndTime = DateTime.Now;
-
-                    double totalSeconds = (helixEndTime - helixBeginTime).TotalMilliseconds;
-                    Console.WriteLine($"[{++DownloadedJobs}]: Helix workItems: {totalSeconds}");
                 }
 
                 DateTime endTime = DateTime.Now;

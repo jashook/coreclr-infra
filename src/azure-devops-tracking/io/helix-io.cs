@@ -50,7 +50,7 @@ public class HelixIO
         {
             if (Uploader == null)
             {
-                Uploader = new CosmosUpload<HelixWorkItemModel>(GlobalLock, helixContainer, Queue);
+                Uploader = new CosmosUpload<HelixWorkItemModel>("[Helix Work Item Model Upload]", GlobalLock, helixContainer, Queue, (HelixWorkItemModel document) => { return document.Name; });
             }
         }
     }
@@ -64,7 +64,7 @@ public class HelixIO
     public string StepId { get; set; }
 
     private static object FinishLock = new object();
-    private static TreeQueue<HelixWorkItemModel> Queue = new TreeQueue<HelixWorkItemModel>();
+    private static TreeQueue<HelixWorkItemModel> Queue = new TreeQueue<HelixWorkItemModel>(maxLeafSize: 50);
     private static CosmosUpload<HelixWorkItemModel> Uploader = null;
     private static object UploadLock = new object();
     private static object GlobalLock = new object();
@@ -98,6 +98,11 @@ public class HelixIO
 
             HelixWorkItemSummary summary = JsonConvert.DeserializeObject<HelixWorkItemSummary>(summaryResponse);
 
+            if (summary.Finished == null || summary.Created == null)
+            {
+                continue;
+            }
+
             model.End = DateTime.Parse(summary.Finished);
             model.Start = DateTime.Parse(summary.Created);
             model.ElapsedTime = (model.End - model.Start).TotalSeconds;
@@ -110,7 +115,16 @@ public class HelixIO
             model.WorkItems = new List<HelixWorkItemModel>();
             model.StepId = StepId;
 
-            string workItemDetailResponse = Shared.Get(workitemsUri, retryCount: 5);
+            string workItemDetailResponse = null;
+            try
+            {
+                workItemDetailResponse = Shared.Get(workitemsUri, retryCount: 5);
+            }
+            catch (Exception e)
+            {
+                // Some issue with helix keeps us from downloading this item
+                continue;
+            }
 
             string workItemJson = workItemDetailResponse;
             List<HelixWorkItemDetail> workItems = JsonConvert.DeserializeObject<List<HelixWorkItemDetail>>(workItemJson);
@@ -125,7 +139,16 @@ public class HelixIO
             {
                 tasks.Add(Task.Run(() => {
                     DateTime startHelixWorkitem = DateTime.Now;
-                    string workItemDetailsStr = Shared.Get(item.DetailsUrl, retryCount: 5);
+                    string workItemDetailsStr = null;
+                    try
+                    {
+                        workItemDetailsStr = Shared.Get(item.DetailsUrl, retryCount: 5);
+                    }
+                    catch (Exception e)
+                    {
+                        return;
+                    }
+
                     var modelToAdd = new HelixWorkItemModel();
 
                     HelixWorkItem workItem = JsonConvert.DeserializeObject<HelixWorkItem>(workItemDetailsStr);
@@ -149,7 +172,21 @@ public class HelixIO
                     {
                         Debug.Assert(logUri != null);
 
-                        string helixRunnerLog = Shared.Get(logUri, retryCount: 5);
+                        string helixRunnerLog = null;
+                        bool continueDueToException = false;
+                        try
+                        {
+                            helixRunnerLog = Shared.Get(logUri, retryCount: 5);
+                        }
+                        catch (Exception e)
+                        {
+                            continueDueToException = true;
+                        }
+
+                        if (continueDueToException)
+                        {
+                            return;
+                        }
 
                         string delim = helixRunnerLog.Contains("_dump_file_upload") ? "\t" : ": ";
 
@@ -270,7 +307,16 @@ public class HelixIO
 
                         if (workItemModel.ExitCode != 0)
                         {
-                            workItemModel.Console = Shared.Get(workItem.ConsoleOutputUri, retryCount: 5);
+                            workItemModel.Console = null;
+                            
+                            try
+                            {
+                                workItemModel.Console = Shared.Get(workItem.ConsoleOutputUri, retryCount: 5);
+                            }
+                            catch(Exception e)
+                            {
+                                // do nothing.
+                            }
                         }
                         workItemModel.Id = Guid.NewGuid().ToString();
 

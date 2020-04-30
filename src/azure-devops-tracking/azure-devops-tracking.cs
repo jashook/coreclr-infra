@@ -392,7 +392,7 @@ public class AzureDevopsTracking
 
     public async Task Update()
     {
-        int limit = 2000;
+        int limit = 50;
 
         var lastRun = await GetLastRunFromDb();
 
@@ -720,11 +720,8 @@ public class AzureDevopsTracking
     {
         Queue<AzureDevOpsJobModel> jobQueue = new Queue<AzureDevOpsJobModel>();
 
-        TreeQueue<RuntimeModel> queue = new TreeQueue<RuntimeModel>();
-        CosmosUpload<RuntimeModel> uploader = new CosmosUpload<RuntimeModel>(new object(), RuntimeContainer, queue);
-
-        int runtimeConflicts = 0;
-        int jobConflicts = 0;
+        TreeQueue<RuntimeModel> queue = new TreeQueue<RuntimeModel>(maxLeafSize: 10);
+        CosmosUpload<RuntimeModel> uploader = new CosmosUpload<RuntimeModel>("[Runtime Model Upload]", new object(), RuntimeContainer, queue, (RuntimeModel doc) => { return doc.BuildReasonString; });
 
         foreach (var model in models)
         {
@@ -748,18 +745,20 @@ public class AzureDevopsTracking
         Console.WriteLine("Uploading runtime models.");
         Console.WriteLine($"Total count: {models.Count}");
 
+        uploader.Finish(join: false);
+
         // Job uploads
 
         JobIO io = new JobIO(Db);
 
-        List<AzureDevOpsJobModel> jobs = new List<AzureDevOpsJobModel>();
+        Queue<AzureDevOpsJobModel> jobs = new Queue<AzureDevOpsJobModel>();
         foreach (var item in jobQueue)
         {
-            jobs.Add(item);
+            jobs.Enqueue(item);
         }
+        jobQueue = null;
 
         await io.UploadData(jobs);
-        uploader.Finish();
     }
 
     ////////////////////////////////////////////////////////////////////////////

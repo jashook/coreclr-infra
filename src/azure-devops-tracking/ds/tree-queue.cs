@@ -95,6 +95,8 @@ public class TreeQueue<T>
         lock (QueueLock)
         {
             Finishing = true;
+
+            _AddToTransportQueue();
         }
     }
 
@@ -118,7 +120,7 @@ public class TreeQueue<T>
         // Under a lock, we can mess with Transport queue
         if (TransportQueue.Count > 0)
         {
-            for (long index = 0; index < MaxLeafQueueSize - 1; ++index)
+            for (long index = 0; index < MaxLeafQueueSize - 1 && TransportQueue.Count > 0; ++index)
             {
                 DequeueQueue[index] = TransportQueue.Dequeue();
                 ++DequeueQueueSize;

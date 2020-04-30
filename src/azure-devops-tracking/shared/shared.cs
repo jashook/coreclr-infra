@@ -75,9 +75,9 @@ public class Shared
                     return reader.ReadToEnd();
                 }
             }
-            catch (Exception e)
+            catch (WebException e)
             {
-                if (retryCount == 0)
+                if (e.Message.Contains("403") || retryCount == 0)
                 {
                     throw e;
                 }

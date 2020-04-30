@@ -44,7 +44,7 @@ public class CosmosUpload<T> where T : IDocument
     // Constructor
     ////////////////////////////////////////////////////////////////////////////
 
-    public CosmosUpload(object uploadLock, Container helixContainer, TreeQueue<T> uploadQueue)
+    public CosmosUpload(string prefixMessage, object uploadLock, Container helixContainer, TreeQueue<T> uploadQueue, Func<T, string> getPartitionKey)
     {
         if (!RunningUpload)
         {
@@ -61,6 +61,9 @@ public class CosmosUpload<T> where T : IDocument
 
                     FailedDocumentCount = 0;
                     SuccessfulDocumentCount = 0;
+
+                    GetPartitionKey = getPartitionKey;
+                    PrefixMessage = prefixMessage;
 
                     DocumentSize = 0;
                     RetrySize = 0;
@@ -93,15 +96,21 @@ public class CosmosUpload<T> where T : IDocument
     // Member functions
     ////////////////////////////////////////////////////////////////////////////
 
-    public void Finish()
+    public void Finish(bool join = true)
     {
         UploadQueue.SignalToFinish();
-        UploadThread.Join();
+
+        if (join)
+        {
+            UploadThread.Join();
+        }
     }
 
     ////////////////////////////////////////////////////////////////////////////
     // Static variables
     ////////////////////////////////////////////////////////////////////////////
+
+    private static string PrefixMessage { get; set; }
 
     private static long CapSize { get; set; }
     private static long DocumentSize { get; set; }
@@ -109,6 +118,8 @@ public class CosmosUpload<T> where T : IDocument
     private static int SuccessfulDocumentCount { get; set; }
     private static int FailedDocumentCount { get; set; }
     private static Container HelixContainer { get; set; }
+
+    private static Func<T, string> GetPartitionKey { get; set; }
 
     private static List<Task<OperationResponse<T>>> CosmosOperations { get; set; }
     private static List<Task<OperationResponse<T>>> CosmosRetryOperations { get; set; }
@@ -134,9 +145,9 @@ public class CosmosUpload<T> where T : IDocument
             DocumentSize += document.Console.Length;
         }
         
-        CosmosOperations.Add(HelixContainer.CreateItemAsync<T>(document, new PartitionKey(document.Name)).CaptureOperationResponse(document));
+        CosmosOperations.Add(HelixContainer.CreateItemAsync<T>(document, new PartitionKey(GetPartitionKey(document))).CaptureOperationResponse(document));
         
-        if (DocumentSize > CapSize || CosmosOperations.Count > 50)
+        if (DocumentSize > CapSize || CosmosOperations.Count > 10)
         {
             await DrainCosmosOperations();
             DocumentSize = 0;
@@ -150,7 +161,7 @@ public class CosmosUpload<T> where T : IDocument
         {
             RetrySize += document.Console.Length;
         }
-        CosmosRetryOperations.Add(HelixContainer.CreateItemAsync<T>(document, new PartitionKey(document.Name)).CaptureOperationResponse(document));
+        CosmosRetryOperations.Add(HelixContainer.CreateItemAsync<T>(document, new PartitionKey(GetPartitionKey(document))).CaptureOperationResponse(document));
 
         if (RetrySize > CapSize || CosmosRetryOperations.Count > 50)
         {
@@ -162,33 +173,17 @@ public class CosmosUpload<T> where T : IDocument
 
     private static async Task DrainCosmosOperations()
     {
-        List<Task<OperationResponse<T>>> copy = new List<Task<OperationResponse<T>>>();
+        BulkOperationResponse<T> helixBulkOperationResponse = await Shared.ExecuteTasksAsync(CosmosOperations);
+        Console.WriteLine($"{PrefixMessage}: Bulk update operation finished in {helixBulkOperationResponse.TotalTimeTaken}");
+        Console.WriteLine($"{PrefixMessage}: Consumed {helixBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+        Console.WriteLine($"{PrefixMessage}: Created {helixBulkOperationResponse.SuccessfulDocuments} documents");
+        Console.WriteLine($"{PrefixMessage}: Failed {helixBulkOperationResponse.Failures.Count} documents");
 
-        try
-        {
-            foreach (var item in CosmosOperations)
-            {
-                copy.Add(item);
-            }
-        }
-        catch (Exception e)
-        {
-            foreach (var item in CosmosOperations)
-            {
-                copy.Add(item);
-            }
-        }
-
-        CosmosOperations = new List<Task<OperationResponse<T>>>();
-        BulkOperationResponse<T> helixBulkOperationResponse = await Shared.ExecuteTasksAsync(copy);
-        Console.WriteLine($"Bulk update operation finished in {helixBulkOperationResponse.TotalTimeTaken}");
-        Console.WriteLine($"Consumed {helixBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
-        Console.WriteLine($"Created {helixBulkOperationResponse.SuccessfulDocuments} documents");
-        Console.WriteLine($"Failed {helixBulkOperationResponse.Failures.Count} documents");
+        CosmosOperations.Clear();
 
         if (helixBulkOperationResponse.Failures.Count > 0)
         {
-            Console.WriteLine($"First failed sample document {helixBulkOperationResponse.Failures[0].Item1.Name} - {helixBulkOperationResponse.Failures[0].Item2}");
+            Console.WriteLine($"{PrefixMessage}: First failed sample document {helixBulkOperationResponse.Failures[0].Item1.Name} - {helixBulkOperationResponse.Failures[0].Item2}");
 
             foreach (var operationFailure in helixBulkOperationResponse.Failures)
             {
@@ -202,24 +197,17 @@ public class CosmosUpload<T> where T : IDocument
 
     private static async Task DrainRetryOperations()
     {
-        List<Task<OperationResponse<T>>> copy = new List<Task<OperationResponse<T>>>();
+        BulkOperationResponse<T> helixBulkOperationResponse = await Shared.ExecuteTasksAsync(CosmosRetryOperations);
+        Console.WriteLine($"{PrefixMessage}: Bulk update operation finished in {helixBulkOperationResponse.TotalTimeTaken}");
+        Console.WriteLine($"{PrefixMessage}: Consumed {helixBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+        Console.WriteLine($"{PrefixMessage}: Created {helixBulkOperationResponse.SuccessfulDocuments} documents");
+        Console.WriteLine($"{PrefixMessage}: Failed {helixBulkOperationResponse.Failures.Count} documents");
 
-        foreach (var item in CosmosRetryOperations)
-        {
-            copy.Add(item);
-        }
-
-        CosmosRetryOperations = new List<Task<OperationResponse<T>>>();
-
-        BulkOperationResponse<T> helixBulkOperationResponse = await Shared.ExecuteTasksAsync(copy);
-        Console.WriteLine($"Bulk update operation finished in {helixBulkOperationResponse.TotalTimeTaken}");
-        Console.WriteLine($"Consumed {helixBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
-        Console.WriteLine($"Created {helixBulkOperationResponse.SuccessfulDocuments} documents");
-        Console.WriteLine($"Failed {helixBulkOperationResponse.Failures.Count} documents");
+        CosmosRetryOperations.Clear();
 
         if (helixBulkOperationResponse.Failures.Count > 0)
         {
-            Console.WriteLine($"First failed sample document {helixBulkOperationResponse.Failures[0].Item1.Name} - {helixBulkOperationResponse.Failures[0].Item2}");
+            Console.WriteLine($"{PrefixMessage}: First failed sample document {helixBulkOperationResponse.Failures[0].Item1.Name} - {helixBulkOperationResponse.Failures[0].Item2}");
 
             foreach (var operationFailure in helixBulkOperationResponse.Failures)
             {
@@ -249,6 +237,7 @@ public class CosmosUpload<T> where T : IDocument
 
             if (model == null)
             {
+                DrainCosmosOperations().Wait();
                 Debug.Assert(finished);
                 break;
             }

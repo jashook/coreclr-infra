@@ -28,6 +28,8 @@ public class RuntimeModel : IDocument
     [JsonProperty(PropertyName = "id")]
     public string Id { get; set; }
 
+    public string Console { get; set; }
+
     public DateTime DateStart { get; set; }
 
     public DateTime DateEnd { get; set; }
@@ -44,6 +46,8 @@ public class RuntimeModel : IDocument
 
     [JsonProperty(PropertyName = "BuildReasonString")]
     public string BuildReasonString { get; set; }
+
+    public string Name { get; set; }
 
     public string PrNumber { get; set; }
 
