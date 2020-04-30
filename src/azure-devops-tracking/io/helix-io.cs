@@ -63,6 +63,7 @@ public class HelixIO
     public string JobName { get; set; }
     public string StepId { get; set; }
 
+    private static object FinishLock = new object;
     private static TreeQueue<HelixWorkItemModel> Queue = new TreeQueue<HelixWorkItemModel>();
     private static CosmosUpload<HelixWorkItemModel> Uploader = null;
     private static object UploadLock = new object();
@@ -301,6 +302,11 @@ public class HelixIO
         }
 
         return helixSubmissions;
+    }
+
+    public static void SignalToFinish()
+    {
+        Uploader.Finish();
     }
 
     ////////////////////////////////////////////////////////////////////////////

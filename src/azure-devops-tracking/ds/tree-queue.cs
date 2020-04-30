@@ -46,7 +46,24 @@ public class TreeQueue<T>
     ////////////////////////////////////////////////////////////////////////////
 
     public int MaxLeafQueueSize { get; set; }
-    private bool Finished { get; set; }
+
+    public bool Finished
+    { 
+        get
+        {
+            bool finished = false;
+            lock(QueueLock)
+            {
+                finshed = _finished;
+            }
+
+            return finished;
+        }
+
+        private set;
+    }
+
+    private bool _finished { get; set; }
     private bool Finishing { get; set; }
 
     private T[] EnqueueQueue { get; set; }
@@ -70,7 +87,7 @@ public class TreeQueue<T>
         return _Dequeue(waitCallback);
     }
 
-    public async Task Finish()
+    public void SignalToFinish()
     {
         lock (QueueLock)
         {
@@ -138,7 +155,26 @@ public class TreeQueue<T>
             }
             else
             {
+                lock (QueueLock)
+                {
+                    if (Finishing)
+                    {
+                        if (TransportQueue.Count == 0)
+                        {
+                            _finished = True;
+                        }
+                    }
+                }
+                
                 waitCallback();
+
+                lock (QueueLock)
+                {
+                    if (_finished)
+                    {
+                        return null;
+                    }
+                }
             }
         } while (requireWaitCallback);
 

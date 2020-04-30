@@ -76,7 +76,9 @@ public class JobIO
         }
 
         await Task.WhenAll(tasks);
-        await Uploader.Finish();
+
+        HelixIO.Finishing = true;
+        Uploader.Finish();
     }
 
     public async Task ReUploadData(FeedIterator<AzureDevOpsJobModel> iterator, bool force)
@@ -224,9 +226,9 @@ public class JobIO
 
     private void SubmitToUpload(AzureDevOpsJobModel model)
     {
-        // lock(UploadLock)
-        // {
-        //     Queue.Enqueue(model);
-        // }
+        lock(UploadLock)
+        {
+            Queue.Enqueue(model);
+        }
     }
 }

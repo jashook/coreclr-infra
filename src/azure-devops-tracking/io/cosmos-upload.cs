@@ -93,9 +93,10 @@ public class CosmosUpload<T> where T : IDocument
     // Member functions
     ////////////////////////////////////////////////////////////////////////////
 
-    public async Task Finish()
+    public void Finish()
     {
-        await UploadQueue.Finish();
+        UploadQueue.SignalToFinish();
+        UploadThread.Join();
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -234,11 +235,23 @@ public class CosmosUpload<T> where T : IDocument
     {
         // This is the only consumer. We do not need to lock.
 
-        while (true)
+        bool finished = false;
+        while (!finished)
         {
             T model = queue.Dequeue(() => {
+                if (queue.Finished)
+                {
+                    finished = true;
+                }
+                
                 Thread.Sleep(5000);
             });
+
+            if (model == null)
+            {
+                Debug.Assert(finished);
+                break;
+            }
 
             AddOperation(model).Wait();
         }
