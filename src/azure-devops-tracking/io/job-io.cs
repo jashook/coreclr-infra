@@ -77,7 +77,7 @@ public class JobIO
 
         await Task.WhenAll(tasks);
 
-        HelixIO.Finishing = true;
+        HelixIO.SignalToFinish();
         Uploader.Finish();
     }
 
@@ -130,7 +130,7 @@ public class JobIO
                     }
 
                     DateTime beginUriDownload = DateTime.Now;
-                    step.Console = Shared.Get(step.ConsoleUri);
+                    step.Console = Shared.Get(step.ConsoleUri, retryCount: 5);
                     DateTime endUriDownload = DateTime.Now;
                     elapsedUriDownloadTime = (endUriDownload - beginUriDownload).TotalMilliseconds;
 

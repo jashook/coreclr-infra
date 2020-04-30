@@ -59,17 +59,33 @@ public class Shared
         // </WhenAll>
     }
 
-    public static string Get(string uri)
+    public static string Get(string uri, int retryCount = 1)
     {
-        HttpWebRequest request = (HttpWebRequest)WebRequest.Create(uri);
-        request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
-
-        using(HttpWebResponse response = (HttpWebResponse)request.GetResponse())
-        using(Stream stream = response.GetResponseStream())
-        using(StreamReader reader = new StreamReader(stream))
+        while (retryCount-- != 0)
         {
-            return reader.ReadToEnd();
+            try
+            {
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(uri);
+                request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+
+                using(HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                using(Stream stream = response.GetResponseStream())
+                using(StreamReader reader = new StreamReader(stream))
+                {
+                    return reader.ReadToEnd();
+                }
+            }
+            catch (Exception e)
+            {
+                if (retryCount == 0)
+                {
+                    throw e;
+                }
+            }
         }
+
+        return null;
+        
     }
 
     public static async Task<string> HttpRequestAsync(string location)

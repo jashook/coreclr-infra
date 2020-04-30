@@ -63,7 +63,7 @@ public class HelixIO
     public string JobName { get; set; }
     public string StepId { get; set; }
 
-    private static object FinishLock = new object;
+    private static object FinishLock = new object();
     private static TreeQueue<HelixWorkItemModel> Queue = new TreeQueue<HelixWorkItemModel>();
     private static CosmosUpload<HelixWorkItemModel> Uploader = null;
     private static object UploadLock = new object();
@@ -90,7 +90,7 @@ public class HelixIO
             string workitemsUri = $"{helixApiString}/{job}/workitems";
 
             DateTime beginSummary = DateTime.Now;
-            string summaryResponse = Shared.Get(summaryUri);
+            string summaryResponse = Shared.Get(summaryUri, retryCount: 5);
             DateTime endSummary = DateTime.Now;
 
             double elapsedSummaryTime = (endSummary - beginSummary).TotalMilliseconds;
@@ -110,7 +110,7 @@ public class HelixIO
             model.WorkItems = new List<HelixWorkItemModel>();
             model.StepId = StepId;
 
-            string workItemDetailResponse = Shared.Get(workitemsUri);
+            string workItemDetailResponse = Shared.Get(workitemsUri, retryCount: 5);
 
             string workItemJson = workItemDetailResponse;
             List<HelixWorkItemDetail> workItems = JsonConvert.DeserializeObject<List<HelixWorkItemDetail>>(workItemJson);
@@ -125,7 +125,7 @@ public class HelixIO
             {
                 tasks.Add(Task.Run(() => {
                     DateTime startHelixWorkitem = DateTime.Now;
-                    string workItemDetailsStr = Shared.Get(item.DetailsUrl);
+                    string workItemDetailsStr = Shared.Get(item.DetailsUrl, retryCount: 5);
                     var modelToAdd = new HelixWorkItemModel();
 
                     HelixWorkItem workItem = JsonConvert.DeserializeObject<HelixWorkItem>(workItemDetailsStr);
@@ -149,7 +149,7 @@ public class HelixIO
                     {
                         Debug.Assert(logUri != null);
 
-                        string helixRunnerLog = Shared.Get(logUri);
+                        string helixRunnerLog = Shared.Get(logUri, retryCount: 5);
 
                         string delim = helixRunnerLog.Contains("_dump_file_upload") ? "\t" : ": ";
 
@@ -270,7 +270,7 @@ public class HelixIO
 
                         if (workItemModel.ExitCode != 0)
                         {
-                            workItemModel.Console = Shared.Get(workItem.ConsoleOutputUri);
+                            workItemModel.Console = Shared.Get(workItem.ConsoleOutputUri, retryCount: 5);
                         }
                         workItemModel.Id = Guid.NewGuid().ToString();
 
@@ -315,10 +315,10 @@ public class HelixIO
 
     private void SubmitToUpload(HelixWorkItemModel model)
     {
-        // lock(UploadLock)
-        // {
-        //     Queue.Enqueue(model);
-        // }
+        lock(UploadLock)
+        {
+            Queue.Enqueue(model);
+        }
     }
 
 }

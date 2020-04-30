@@ -54,13 +54,16 @@ public class TreeQueue<T>
             bool finished = false;
             lock(QueueLock)
             {
-                finshed = _finished;
+                finished = _finished;
             }
 
             return finished;
         }
 
-        private set;
+        private set
+        {
+            
+        }
     }
 
     private bool _finished { get; set; }
@@ -161,7 +164,7 @@ public class TreeQueue<T>
                     {
                         if (TransportQueue.Count == 0)
                         {
-                            _finished = True;
+                            _finished = true;
                         }
                     }
                 }
@@ -172,7 +175,7 @@ public class TreeQueue<T>
                 {
                     if (_finished)
                     {
-                        return null;
+                        return default(T);
                     }
                 }
             }

@@ -390,7 +390,7 @@ public class AzureDevopsTracking
 
     public async Task Update()
     {
-        int limit = 1;
+        int limit = 500;
 
         var lastRun = await GetLastRunFromDb();
 
@@ -575,7 +575,7 @@ public class AzureDevopsTracking
                     
                     if (step.Name.Contains("Evaluate paths for"))
                     {
-                        step.Console = Shared.Get(step.ConsoleUri);
+                        step.Console = Shared.Get(step.ConsoleUri, retryCount: 5);
                     }
                 }
 
@@ -750,75 +750,75 @@ public class AzureDevopsTracking
             modelsToUpload.Add(model);
         }
 
-        // var runtimeRetries = new List<Task<OperationResponse<RuntimeModel>>>();
-        // int runtimeCreatedCount = 1;
-        // int runtimetotalJobCount = modelsToUpload.Count;
+        var runtimeRetries = new List<Task<OperationResponse<RuntimeModel>>>();
+        int runtimeCreatedCount = 1;
+        int runtimetotalJobCount = modelsToUpload.Count;
 
-        // // <BulkCreate>
-        // List<Task<OperationResponse<RuntimeModel>>> runtimeOperations = new List<Task<OperationResponse<RuntimeModel>>>(runtimetotalJobCount);
-        // foreach (RuntimeModel document in modelsToUpload)
-        // {
-        //     runtimeOperations.Add(RuntimeContainer.CreateItemAsync<RuntimeModel>(document, new PartitionKey(document.BuildReasonString)).CaptureOperationResponse(document));
-        // }
-        // // </BulkCreate>
+        // <BulkCreate>
+        List<Task<OperationResponse<RuntimeModel>>> runtimeOperations = new List<Task<OperationResponse<RuntimeModel>>>(runtimetotalJobCount);
+        foreach (RuntimeModel document in modelsToUpload)
+        {
+            runtimeOperations.Add(RuntimeContainer.CreateItemAsync<RuntimeModel>(document, new PartitionKey(document.BuildReasonString)).CaptureOperationResponse(document));
+        }
+        // </BulkCreate>
 
-        // Console.WriteLine($"Beginning bulk upload. Amount to upload: {runtimetotalJobCount}");
+        Console.WriteLine($"Beginning bulk upload. Amount to upload: {runtimetotalJobCount}");
 
-        // BulkOperationResponse<RuntimeModel> runtimeBulkOperationResponse = await Shared.ExecuteTasksAsync(runtimeOperations);
-        // Console.WriteLine($"Bulk update operation finished in {runtimeBulkOperationResponse.TotalTimeTaken}");
-        // Console.WriteLine($"Consumed {runtimeBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
-        // Console.WriteLine($"Created {runtimeBulkOperationResponse.SuccessfulDocuments} documents");
-        // Console.WriteLine($"Failed {runtimeBulkOperationResponse.Failures.Count} documents");
-        // if (runtimeBulkOperationResponse.Failures.Count > 0)
-        // {
-        //     Console.WriteLine($"First failed sample document {runtimeBulkOperationResponse.Failures[0].Item1.Id} - {runtimeBulkOperationResponse.Failures[0].Item2}");
+        BulkOperationResponse<RuntimeModel> runtimeBulkOperationResponse = await Shared.ExecuteTasksAsync(runtimeOperations);
+        Console.WriteLine($"Bulk update operation finished in {runtimeBulkOperationResponse.TotalTimeTaken}");
+        Console.WriteLine($"Consumed {runtimeBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+        Console.WriteLine($"Created {runtimeBulkOperationResponse.SuccessfulDocuments} documents");
+        Console.WriteLine($"Failed {runtimeBulkOperationResponse.Failures.Count} documents");
+        if (runtimeBulkOperationResponse.Failures.Count > 0)
+        {
+            Console.WriteLine($"First failed sample document {runtimeBulkOperationResponse.Failures[0].Item1.Id} - {runtimeBulkOperationResponse.Failures[0].Item2}");
 
 
-        //     foreach (var item in runtimeBulkOperationResponse.Failures)
-        //     {
-        //         if (((CosmosException)item.Item2).StatusCode != HttpStatusCode.Conflict)
-        //         {
-        //             runtimeRetries.Add(RuntimeContainer.CreateItemAsync<RuntimeModel>(item.Item1, new PartitionKey(item.Item1.BuildReasonString)).CaptureOperationResponse(item.Item1));
-        //         }
-        //         else
-        //         {
-        //             ++runtimeConflicts;
-        //         }
-        //     }
-        // }
+            foreach (var item in runtimeBulkOperationResponse.Failures)
+            {
+                if (((CosmosException)item.Item2).StatusCode != HttpStatusCode.Conflict)
+                {
+                    runtimeRetries.Add(RuntimeContainer.CreateItemAsync<RuntimeModel>(item.Item1, new PartitionKey(item.Item1.BuildReasonString)).CaptureOperationResponse(item.Item1));
+                }
+                else
+                {
+                    ++runtimeConflicts;
+                }
+            }
+        }
 
-        // runtimeCreatedCount += runtimeBulkOperationResponse.SuccessfulDocuments;
+        runtimeCreatedCount += runtimeBulkOperationResponse.SuccessfulDocuments;
 
-        // while (runtimeRetries.Count > 0)
-        // {
-        //     runtimeBulkOperationResponse = await Shared.ExecuteTasksAsync(runtimeOperations);
-        //     Console.WriteLine($"Bulk update operation finished in {runtimeBulkOperationResponse.TotalTimeTaken}");
-        //     Console.WriteLine($"Consumed {runtimeBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
-        //     Console.WriteLine($"Created {runtimeBulkOperationResponse.SuccessfulDocuments} documents");
-        //     Console.WriteLine($"Failed {runtimeBulkOperationResponse.Failures.Count} documents");
+        while (runtimeRetries.Count > 0)
+        {
+            runtimeBulkOperationResponse = await Shared.ExecuteTasksAsync(runtimeOperations);
+            Console.WriteLine($"Bulk update operation finished in {runtimeBulkOperationResponse.TotalTimeTaken}");
+            Console.WriteLine($"Consumed {runtimeBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+            Console.WriteLine($"Created {runtimeBulkOperationResponse.SuccessfulDocuments} documents");
+            Console.WriteLine($"Failed {runtimeBulkOperationResponse.Failures.Count} documents");
 
-        //     runtimeRetries.Clear();
+            runtimeRetries.Clear();
             
-        //     if (runtimeBulkOperationResponse.Failures.Count > 0)
-        //     {
-        //         Console.WriteLine($"First failed sample document {runtimeBulkOperationResponse.Failures[0].Item1.Id} - {runtimeBulkOperationResponse.Failures[0].Item2}");
+            if (runtimeBulkOperationResponse.Failures.Count > 0)
+            {
+                Console.WriteLine($"First failed sample document {runtimeBulkOperationResponse.Failures[0].Item1.Id} - {runtimeBulkOperationResponse.Failures[0].Item2}");
 
 
-        //         foreach (var item in runtimeBulkOperationResponse.Failures)
-        //         {
-        //             if (((CosmosException)item.Item2).StatusCode != HttpStatusCode.Conflict)
-        //             {
-        //                 runtimeRetries.Add(RuntimeContainer.CreateItemAsync<RuntimeModel>(item.Item1, new PartitionKey(item.Item1.BuildReasonString)).CaptureOperationResponse(item.Item1));
-        //             }
-        //             else
-        //             {
-        //                 ++runtimeConflicts;
-        //             }
-        //         }
-        //     }
+                foreach (var item in runtimeBulkOperationResponse.Failures)
+                {
+                    if (((CosmosException)item.Item2).StatusCode != HttpStatusCode.Conflict)
+                    {
+                        runtimeRetries.Add(RuntimeContainer.CreateItemAsync<RuntimeModel>(item.Item1, new PartitionKey(item.Item1.BuildReasonString)).CaptureOperationResponse(item.Item1));
+                    }
+                    else
+                    {
+                        ++runtimeConflicts;
+                    }
+                }
+            }
 
-        //     runtimeCreatedCount += runtimeBulkOperationResponse.SuccessfulDocuments;
-        // }
+            runtimeCreatedCount += runtimeBulkOperationResponse.SuccessfulDocuments;
+        }
 
         // Job uploads
 
