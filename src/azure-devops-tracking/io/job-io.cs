@@ -70,6 +70,7 @@ public class JobIO
         while (jobs.Count > 0)
         {
             AzureDevOpsJobModel document = jobs.Dequeue();
+            ++count;
             tasks.Add(UploadDocument(document, true, false));
 
             if (tasks.Count > 5)
@@ -77,7 +78,6 @@ public class JobIO
                 await Task.WhenAll(tasks);
             }
 
-            count += 5;
             Console.WriteLine($"[Job Count] - [{count}:{total}] - Finished");
         }
 
