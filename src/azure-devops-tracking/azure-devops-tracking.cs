@@ -498,222 +498,232 @@ public class AzureDevopsTracking
 
         int total = buildRecords.Count;
         int index = 1;
+        List<Task> tasks = new List<Task>();
+        object modelLock = new object();
         foreach (var build in buildRecords)
         {
-            if (limit > 0 && index > limit)
+            tasks.Add(Task.Run(() => { AddToModels(modelLock, build, index++, total, models).Wait(); }));
+
+            if (tasks.Count > limit)
             {
                 break;
             }
+        }
 
-            Console.WriteLine($"[{index++}:{total}]");
+        await Task.WhenAll(tasks);
+        return models;
+    }
 
-            RuntimeModel model = new RuntimeModel();
-            if (build.FinishTime == null)
-            {
-                continue;
-            }
+    private async Task AddToModels(object modelLock, Build build, int index, int total, List<RuntimeModel> models)
+    {
+        Console.WriteLine($"[{index}:{total}]");
+        RuntimeModel model = new RuntimeModel();
+        if (build.FinishTime == null)
+        {
+            return;
+        }
 
-            model.BuildNumber = build.BuildNumber;
-            model.DateEnd = DateTime.Parse(build.FinishTime);
-            model.DateStart = DateTime.Parse(build.StartTime);
-            model.ElapsedTime = (long)((model.DateEnd - model.DateStart).TotalSeconds);
-            model.BuildResult = build.Result;
-            model.BuildNumber = build.BuildNumber;
-            model.BuildReason = build.Reason;
-            model.BuildReasonString = build.Reason.ToString();
+        model.BuildNumber = build.BuildNumber;
+        model.DateEnd = DateTime.Parse(build.FinishTime);
+        model.DateStart = DateTime.Parse(build.StartTime);
+        model.ElapsedTime = (long)((model.DateEnd - model.DateStart).TotalSeconds);
+        model.BuildResult = build.Result;
+        model.BuildNumber = build.BuildNumber;
+        model.BuildReason = build.Reason;
+        model.BuildReasonString = build.Reason.ToString();
+        
+        if (build.Reason == BuildReason.PullRequest)
+        {
+            var dict = JObject.FromObject(build.TriggerInfo).ToObject<Dictionary<string, string>>();;
             
-            if (build.Reason == BuildReason.PullRequest)
-            {
-                var dict = JObject.FromObject(build.TriggerInfo).ToObject<Dictionary<string, string>>();;
-                
-                model.PrNumber = dict["pr.number"];
-                model.PrSourceBranch = dict["pr.sourceBranch"];
-                model.PrSourceSha = dict["pr.sourceSha"];
-                model.PrTitle = dict["pr.title"];
-                model.PrSenderName = dict["pr.sender.name"];
-            }
+            model.PrNumber = dict["pr.number"];
+            model.PrSourceBranch = dict["pr.sourceBranch"];
+            model.PrSourceSha = dict["pr.sourceSha"];
+            model.PrTitle = dict["pr.title"];
+            model.PrSenderName = dict["pr.sender.name"];
+        }
 
-            model.SourceSha = build.SourceVersion;
+        model.SourceSha = build.SourceVersion;
 
-            var timeline = await Server.GetTimelineAsync(build.Project.Name, build.Id);
+        var timeline = await Server.GetTimelineAsync(build.Project.Name, build.Id);
 
-            if (timeline is null)
+        if (timeline is null)
+        {
+            return;
+        }
+
+        Dictionary<string, AzureDevOpsJobModel> jobs = new Dictionary<string, AzureDevOpsJobModel>();
+        Dictionary<string, TimelineRecord> records = new Dictionary<string, TimelineRecord>();
+
+        int count = 0;
+        foreach (var record in timeline.Records)
+        {
+            records[record.Id] = record;
+
+            if (record.FinishTime == null)
             {
                 continue;
             }
 
-            Dictionary<string, AzureDevOpsJobModel> jobs = new Dictionary<string, AzureDevOpsJobModel>();
-            Dictionary<string, TimelineRecord> records = new Dictionary<string, TimelineRecord>();
+            var step = new AzureDevOpsStepModel();
 
-            int count = 0;
-            foreach (var record in timeline.Records)
+            if (record.StartTime == null)
             {
-                records[record.Id] = record;
+                continue;
+            }
 
-                if (record.FinishTime == null)
-                {
-                    continue;
-                }
+            step.DateStart = DateTime.Parse(record.StartTime);
+            step.DateEnd = DateTime.Parse(record.FinishTime);
+            step.ElapsedTime = (step.DateEnd - step.DateStart).TotalSeconds;
+            step.Result = record.Result;
+            step.Name = record.Name;
+            step.Machine = record.WorkerName;
+            step.StepGuid = record.Id;
+            step.ParentGuid = record.ParentId;
 
-                var step = new AzureDevOpsStepModel();
-
-                if (record.StartTime == null)
-                {
-                    continue;
-                }
-
-                step.DateStart = DateTime.Parse(record.StartTime);
-                step.DateEnd = DateTime.Parse(record.FinishTime);
-                step.ElapsedTime = (step.DateEnd - step.DateStart).TotalSeconds;
-                step.Result = record.Result;
-                step.Name = record.Name;
-                step.Machine = record.WorkerName;
-                step.StepGuid = record.Id;
-                step.ParentGuid = record.ParentId;
-
-                if (record.Log != null)
-                {
-                    step.ConsoleUri = record.Log.Url;
-                    
-                    if (step.Name.Contains("Evaluate paths for"))
-                    {
-                        step.Console = Shared.Get(step.ConsoleUri, retryCount: 5);
-                    }
-                }
-
-                if (record.ParentId == null)
-                {
-                    count += 1;
-                    continue;
-                }
+            if (record.Log != null)
+            {
+                step.ConsoleUri = record.Log.Url;
                 
-                if (jobs.ContainsKey(record.ParentId))
+                if (step.Name.Contains("Evaluate paths for"))
                 {
-                    AzureDevOpsJobModel jobModel = jobs[record.ParentId];
-
-                    jobModel.Steps.Add(step);
-                }
-                else if (jobs.ContainsKey(record.Id))
-                {
-                    // Continue.
-
-                    continue;
-                }
-                else
-                {
-                    AzureDevOpsJobModel jobModel = new AzureDevOpsJobModel();
-
-                    jobModel.Steps = new List<AzureDevOpsStepModel>();
-                    jobModel.Steps.Add(step);
-
-                    jobs[record.ParentId] = jobModel;
+                    step.Console = Shared.Get(step.ConsoleUri, retryCount: 1);
                 }
             }
 
-            List<AzureDevOpsJobModel> jobList = new List<AzureDevOpsJobModel>();
-            foreach (var kv in jobs)
+            if (record.ParentId == null)
             {
-                AzureDevOpsJobModel jobModel = kv.Value;
-
-                // Populate the jobModel
-                Debug.Assert(records.ContainsKey(kv.Key));
-                var record = records[kv.Key];
-
-                if (record.StartTime == null) continue;
-                else if (record.FinishTime == null) continue;
-
-                jobModel.DateEnd = DateTime.Parse(record.FinishTime);
-                jobModel.DateStart = DateTime.Parse(record.StartTime);
-                jobModel.ElapsedTime = (jobModel.DateEnd - jobModel.DateStart).TotalMinutes;
-                
-                jobModel.JobGuid = record.Id;
-
-                Debug.Assert(record.Id == kv.Key);
-
-                jobModel.Name = record.Name;
-                jobModel.Result = record.Result;
-
-                jobModel.Steps.Sort(new StepComparer());
-
-                jobList.Add(jobModel);
+                count += 1;
+                continue;
             }
-
-            jobList.Sort(new JobComparer());
-            model.Jobs = jobList;
-
-            AzureDevOpsJobModel checkoutJob = null;
-            foreach (var job in model.Jobs)
+            
+            if (jobs.ContainsKey(record.ParentId))
             {
-                if (job.Name.ToLower() == "checkout")
-                {
-                    checkoutJob = job;
-                    break;
-                }
+                AzureDevOpsJobModel jobModel = jobs[record.ParentId];
+
+                jobModel.Steps.Add(step);
             }
-
-            if (checkoutJob != null)
+            else if (jobs.ContainsKey(record.Id))
             {
-                foreach (var step in checkoutJob.Steps)
+                // Continue.
+
+                continue;
+            }
+            else
+            {
+                AzureDevOpsJobModel jobModel = new AzureDevOpsJobModel();
+
+                jobModel.Steps = new List<AzureDevOpsStepModel>();
+                jobModel.Steps.Add(step);
+
+                jobs[record.ParentId] = jobModel;
+            }
+        }
+
+        List<AzureDevOpsJobModel> jobList = new List<AzureDevOpsJobModel>();
+        foreach (var kv in jobs)
+        {
+            AzureDevOpsJobModel jobModel = kv.Value;
+
+            // Populate the jobModel
+            Debug.Assert(records.ContainsKey(kv.Key));
+            var record = records[kv.Key];
+
+            if (record.StartTime == null) continue;
+            else if (record.FinishTime == null) continue;
+
+            jobModel.DateEnd = DateTime.Parse(record.FinishTime);
+            jobModel.DateStart = DateTime.Parse(record.StartTime);
+            jobModel.ElapsedTime = (jobModel.DateEnd - jobModel.DateStart).TotalMinutes;
+            
+            jobModel.JobGuid = record.Id;
+
+            Debug.Assert(record.Id == kv.Key);
+
+            jobModel.Name = record.Name;
+            jobModel.Result = record.Result;
+
+            jobModel.Steps.Sort(new StepComparer());
+
+            jobList.Add(jobModel);
+        }
+
+        jobList.Sort(new JobComparer());
+        model.Jobs = jobList;
+
+        AzureDevOpsJobModel checkoutJob = null;
+        foreach (var job in model.Jobs)
+        {
+            if (job.Name.ToLower() == "checkout")
+            {
+                checkoutJob = job;
+                break;
+            }
+        }
+
+        if (checkoutJob != null)
+        {
+            foreach (var step in checkoutJob.Steps)
+            {
+                if (step.Console != null)
                 {
-                    if (step.Console != null)
+                    if (step.Name.ToLower().Contains("coreclr"))
                     {
-                        if (step.Name.ToLower().Contains("coreclr"))
+                        if (step.Console.Contains("No changed files for"))
                         {
-                            if (step.Console.Contains("No changed files for"))
-                            {
-                                model.IsCoreclrRun = false;
-                            }
-                            else
-                            {
-                                model.IsCoreclrRun = true;
-                            }
-                        }
-                        else if (step.Name.ToLower().Contains("libraries"))
-                        {
-                            if (step.Console.Contains("No changed files for"))
-                            {
-                                model.IsLibrariesRun = false;
-                            }
-                            else
-                            {
-                                model.IsLibrariesRun = true;
-                            }
-                        }
-                        else if (step.Name.ToLower().Contains("installer"))
-                        {
-                            if (step.Console.Contains("No changed files for"))
-                            {
-                                model.IsInstallerRun = false;
-                            }
-                            else
-                            {
-                                model.IsInstallerRun = true;
-                            }
-                        }
-                        else if (step.Name.ToLower().Contains("mono"))
-                        {
-                            if (step.Console.Contains("No changed files for"))
-                            {
-                                model.IsMonoRun = false;
-                            }
-                            else
-                            {
-                                model.IsMonoRun = true;
-                            }
+                            model.IsCoreclrRun = false;
                         }
                         else
                         {
-                            // Unreached
-                            Debug.Assert(false);
+                            model.IsCoreclrRun = true;
                         }
+                    }
+                    else if (step.Name.ToLower().Contains("libraries"))
+                    {
+                        if (step.Console.Contains("No changed files for"))
+                        {
+                            model.IsLibrariesRun = false;
+                        }
+                        else
+                        {
+                            model.IsLibrariesRun = true;
+                        }
+                    }
+                    else if (step.Name.ToLower().Contains("installer"))
+                    {
+                        if (step.Console.Contains("No changed files for"))
+                        {
+                            model.IsInstallerRun = false;
+                        }
+                        else
+                        {
+                            model.IsInstallerRun = true;
+                        }
+                    }
+                    else if (step.Name.ToLower().Contains("mono"))
+                    {
+                        if (step.Console.Contains("No changed files for"))
+                        {
+                            model.IsMonoRun = false;
+                        }
+                        else
+                        {
+                            model.IsMonoRun = true;
+                        }
+                    }
+                    else
+                    {
+                        // Unreached
+                        Debug.Assert(false);
                     }
                 }
             }
-
-            models.Add(model);
         }
 
-        return models;
+        lock(modelLock)
+        {
+            models.Add(model);
+        }
     }
 
     private async Task UploadRuns(List<RuntimeModel> models)
@@ -774,9 +784,32 @@ public class AzureDevopsTracking
     {
         if (deleteData)
         {
-            await Db.GetContainer(RuntimeContainerName).DeleteContainerAsync();
-            await Db.GetContainer(JobContainerName).DeleteContainerAsync();
-            await Db.GetContainer(HelixContainerName).DeleteContainerAsync();
+            try
+            {
+                await Db.GetContainer(RuntimeContainerName).DeleteContainerAsync();
+            }
+            catch (Exception e)
+            {
+
+            }
+            
+            try
+            {
+                await Db.GetContainer(JobContainerName).DeleteContainerAsync();
+            }
+            catch (Exception e)
+            {
+
+            }
+
+            try
+            {
+                await Db.GetContainer(HelixContainerName).DeleteContainerAsync();
+            }
+            catch (Exception e)
+            {
+                
+            }
         }
 
         ContainerProperties runtimeContainerProperties = new ContainerProperties(RuntimeContainerName, partitionKeyPath: "/BuildReasonString");

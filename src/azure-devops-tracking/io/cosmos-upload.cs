@@ -58,24 +58,15 @@ public class CosmosUpload<T> where T : IDocument
                 
                     CosmosOperations = new List<Task<OperationResponse<T>>>();
                     CosmosRetryOperations = new List<Task<OperationResponse<T>>>();
-
-                    FailedDocumentCount = 0;
-                    SuccessfulDocumentCount = 0;
-
                     GetPartitionKey = getPartitionKey;
                     PrefixMessage = prefixMessage;
-
-                    DocumentSize = 0;
-                    RetrySize = 0;
-
                     HelixContainer = helixContainer;
                     UploadQueue = uploadQueue;
-
                     RunningUpload = true;
 
                     // There is a ~2mb limit for size and there can be roughly 200 active
                     // tasks at one time.
-                    CapSize = (long)((1 * 1000 * 1000) * 1.5);
+                    CapSize = (long)((1 * 100 * 1000) * 1.5);
 
 
                     UploadThread = new Thread (() => Upload(UploadQueue));
@@ -113,10 +104,10 @@ public class CosmosUpload<T> where T : IDocument
     private static string PrefixMessage { get; set; }
 
     private static long CapSize { get; set; }
-    private static long DocumentSize { get; set; }
-    private static long RetrySize { get; set; }
-    private static int SuccessfulDocumentCount { get; set; }
-    private static int FailedDocumentCount { get; set; }
+    private static long DocumentSize = 0;
+    private static long RetrySize = 0;
+    private static int SuccessfulDocumentCount = 0;
+    private static int FailedDocumentCount = 0;
     private static Container HelixContainer { get; set; }
 
     private static Func<T, string> GetPartitionKey { get; set; }
@@ -124,7 +115,7 @@ public class CosmosUpload<T> where T : IDocument
     private static List<Task<OperationResponse<T>>> CosmosOperations { get; set; }
     private static List<Task<OperationResponse<T>>> CosmosRetryOperations { get; set; }
 
-    private static bool RunningUpload { get; set; }
+    private static bool RunningUpload = false;
     private static TreeQueue<T> UploadQueue { get; set; }
     private static Thread UploadThread { get; set; }
     private static object UploadLock { get; set; }
@@ -135,15 +126,7 @@ public class CosmosUpload<T> where T : IDocument
 
     private static async Task AddOperation(T document)
     {
-        if (document.Console != null)
-        {
-            if (document.Console.Length > 1000*1000)
-            {
-                document.Console = document.Console.Substring(0, 1000*1000);
-            }
-
-            DocumentSize += document.Console.Length;
-        }
+        DocumentSize += document.ToString().Length;
         
         CosmosOperations.Add(HelixContainer.CreateItemAsync<T>(document, new PartitionKey(GetPartitionKey(document))).CaptureOperationResponse(document));
         
@@ -151,7 +134,7 @@ public class CosmosUpload<T> where T : IDocument
         {
             await DrainCosmosOperations();
             DocumentSize = 0;
-            CosmosOperations = new List<Task<OperationResponse<T>>>();
+            CosmosOperations.Clear();
         }
     }
 
@@ -167,7 +150,7 @@ public class CosmosUpload<T> where T : IDocument
         {
             await DrainRetryOperations();
             RetrySize = 0;
-            CosmosRetryOperations = new List<Task<OperationResponse<T>>>();
+            CosmosRetryOperations.Clear();
         }
     }
 
@@ -211,7 +194,10 @@ public class CosmosUpload<T> where T : IDocument
 
             foreach (var operationFailure in helixBulkOperationResponse.Failures)
             {
-                await AddRetryOperation(operationFailure.Item1);
+                if (operationFailure.Item2.Message != "Conflict")
+                {
+                    await AddRetryOperation(operationFailure.Item1);
+                }
             }
         }
 
@@ -243,6 +229,16 @@ public class CosmosUpload<T> where T : IDocument
             }
 
             AddOperation(model).Wait();
+        }
+
+        lock (UploadLock)
+        {
+            GetPartitionKey = null;
+
+            CosmosOperations = null;
+            CosmosRetryOperations = null;
+
+            RunningUpload = false;
         }
     }
 

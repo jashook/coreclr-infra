@@ -85,7 +85,34 @@ public class Shared
         }
 
         return null;
-        
+    }
+
+    public static async Task<string> GetAsync(string uri, int retryCount = 1)
+    {
+        while (retryCount-- != 0)
+        {
+            try
+            {
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(uri);
+                request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+
+                using(HttpWebResponse response = (HttpWebResponse)await request.GetResponseAsync())
+                using(Stream stream = response.GetResponseStream())
+                using(StreamReader reader = new StreamReader(stream))
+                {
+                    return await reader.ReadToEndAsync();
+                }
+            }
+            catch (WebException e)
+            {
+                if (e.Message.Contains("403") || retryCount == 0)
+                {
+                    throw e;
+                }
+            }
+        }
+
+        return null;
     }
 
     public static async Task<string> HttpRequestAsync(string location)
@@ -140,6 +167,16 @@ public static class TaskExtensions
                 {
                     Item = item,
                     IsSuccessful = true,
+                    RequestUnitsConsumed = task.Result.RequestCharge
+                };
+            }
+
+            if (itemResponse.Status == TaskStatus.Canceled)
+            {
+                return new OperationResponse<T>()
+                {
+                    Item = item,
+                    IsSuccessful = false,
                     RequestUnitsConsumed = task.Result.RequestCharge
                 };
             }

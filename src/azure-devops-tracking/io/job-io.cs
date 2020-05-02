@@ -35,11 +35,16 @@ public class JobIO
 
         DownloadedJobs = 0;
 
+        CreatedHelixJobs = false;
+
         lock(UploadLock)
         {
             if (Uploader == null)
             {
-                Uploader = new CosmosUpload<AzureDevOpsJobModel>("[Azure Dev Ops Job Model Upload]", GlobalLock, HelixContainer, Queue, (AzureDevOpsJobModel document) => { return document.Name; });
+                Func<AzureDevOpsJobModel, string> getPartitionKey = (AzureDevOpsJobModel document) => { return document.Name; };
+
+                Queue = new TreeQueue<AzureDevOpsJobModel>(maxLeafSize: 50);
+                Uploader = new CosmosUpload<AzureDevOpsJobModel>("[Azure Dev Ops Job Model Upload]", GlobalLock, db.GetContainer("runtime-jobs"), Queue, getPartitionKey);
             }
         }
 
@@ -51,9 +56,10 @@ public class JobIO
 
     private Container HelixContainer { get; set; }
     public long DownloadedJobs { get; set; }
+    public bool CreatedHelixJobs { get; set; }
     public List<string> Jobs { get; set; }
 
-    private static TreeQueue<AzureDevOpsJobModel> Queue = new TreeQueue<AzureDevOpsJobModel>(maxLeafSize: 50);
+    private static TreeQueue<AzureDevOpsJobModel> Queue = null;
     private static CosmosUpload<AzureDevOpsJobModel> Uploader = null;
     private static object UploadLock = new object();
     private static object GlobalLock = new object();
@@ -67,15 +73,17 @@ public class JobIO
         List<Task> tasks = new List<Task>();
         int count = 0;
         int total = jobs.Count;
+        DateTime beginTime = DateTime.Now;
         while (jobs.Count > 0)
         {
             AzureDevOpsJobModel document = jobs.Dequeue();
             ++count;
             tasks.Add(UploadDocument(document, true, false));
 
-            if (tasks.Count > 5)
+            if (tasks.Count > 500)
             {
                 await Task.WhenAll(tasks);
+                tasks.Clear();
             }
 
             Console.WriteLine($"[Job Count] - [{count}:{total}] - Finished");
@@ -84,8 +92,19 @@ public class JobIO
         await Task.WhenAll(tasks);
         Console.WriteLine($"[Job Count] - [{total}:{total}] - Finished");
 
-        HelixIO.SignalToFinish();
+        DateTime endTime = DateTime.Now;
+        double elapsedTime = (endTime - beginTime).TotalMinutes;
+        Console.WriteLine($"Processed {total} jobs in {elapsedTime}m");
+
+        if (CreatedHelixJobs)
+        {
+            HelixIO.SignalToFinish();
+        }
+
         Uploader.Finish();
+        Uploader = null;
+
+        Debug.Assert(Uploader == null);
     }
 
     public async Task ReUploadData(FeedIterator<AzureDevOpsJobModel> iterator, bool force)
@@ -117,120 +136,11 @@ public class JobIO
 
     private async Task UploadDocument(AzureDevOpsJobModel document, bool forceInsert, bool forceDownloadConsole)
     {
-        bool updated = false;
         List<Task> tasks = new List<Task>();
         
         foreach (AzureDevOpsStepModel step in document.Steps)
         {
-            tasks.Add(Task.Run(() => {
-                DateTime beginTime = DateTime.Now;
-                double elapsedUriDownloadTime = 0;
-                if ((step.ConsoleUri != null) && 
-                    ((forceDownloadConsole == true || 
-                    step.Result == TaskResult.Failed || 
-                    step.Name == "Initialize containers" ||
-                    step.Name.ToLower().Contains("helix"))))
-                {
-                    if (step.Console != null && forceDownloadConsole == true)
-                    {
-                        updated = true;
-                    }
-
-                    DateTime beginUriDownload = DateTime.Now;
-                    step.Console = null;
-
-                    if (step.Result == TaskResult.Failed)
-                    {
-                        try
-                        {
-                            step.Console = Shared.Get(step.ConsoleUri, retryCount: 5);
-                        }
-                        catch(Exception e)
-                        {
-                            // Unable to download console
-                        }
-                    }
-
-                    DateTime endUriDownload = DateTime.Now;
-                    elapsedUriDownloadTime = (endUriDownload - beginUriDownload).TotalMilliseconds;
-
-                    if (step.Name.ToLower().Contains("helix") && step.Console.Contains("Waiting for completion of job "))
-                    {
-                        step.IsHelixSubmission = true;
-                    }
-
-                    if (forceDownloadConsole != true && step.Result != TaskResult.Failed && step.Name != "Initialize containers" && !step.IsHelixSubmission)
-                    {
-                        // We do not want to save console logs for successful jobs
-                        step.Console = null;
-                    }
-                }
-
-                if (step.IsHelixSubmission && step.HelixModel == null)
-                {
-                    if (step.Console == null)
-                    {
-                        return;
-                    }
-
-                    Debug.Assert(step.Console != null);
-
-                    // Parse the console uri for the workitems
-                    var split = step.Console.Split("Waiting for completion of job ");
-
-                    List<string> jobs = new List<string>();
-                    bool first = true;
-                    foreach (var item in split)
-                    {
-                        if (first)
-                        {
-                            first = false;
-                            continue;
-                        }
-
-                        jobs.Add(item.Split("\n")[0].Trim());
-                    }
-
-                    if (step.Id == null)
-                    {
-                        step.Id = Guid.NewGuid().ToString();
-                        updated = true;
-                    }
-
-                    if ((DateTime.Now - step.DateStart).Days <= 40)
-                    {
-                        DateTime helixBeginTime = DateTime.Now;
-                        HelixIO io = new HelixIO(HelixContainer, jobs, step.Name, step.Id);
-                        var task = io.IngestData();
-                        task.Wait();
-                        step.HelixModel = task.Result;
-                        updated = true;
-
-                        foreach (var item in step.HelixModel)
-                        {
-                            foreach (var workItemModel in item.WorkItems)
-                            {
-                                workItemModel.Console = null;
-                            }
-                        }
-
-                        step.HelixModel = null;
-                        DateTime helixEndTime = DateTime.Now;
-
-                        double totalSeconds = (helixEndTime - helixBeginTime).TotalMilliseconds;
-                        Console.WriteLine($"[{++DownloadedJobs}]: Helix workItems: {totalSeconds}");
-                    }
-                }
-
-                DateTime endTime = DateTime.Now;
-                double elapsedTime = (endTime - beginTime).TotalMilliseconds;
-
-                bool logAll = false;
-                if (elapsedTime > 1000 | logAll)
-                {
-                    Console.WriteLine($"[{step.Name}]: Processed in {elapsedTime}. Downloaded console in {elapsedUriDownloadTime}.");
-                }
-            }));
+            tasks.Add(UploadStep(step, forceDownloadConsole));
         }
 
         DateTime jobStarted = DateTime.Now;
@@ -240,10 +150,118 @@ public class JobIO
         double elapsedJobTime = (jobEnded - jobStarted).TotalMilliseconds;
 
         Console.WriteLine($"[Job] -- [{document.Name}]: Processed job in {elapsedJobTime}ms.");
+        SubmitToUpload(document);
+    }
 
-        if (updated || forceInsert)
+    private async Task UploadStep(AzureDevOpsStepModel step, bool forceDownloadConsole)
+    {
+        DateTime beginTime = DateTime.Now;
+        double elapsedUriDownloadTime = 0;
+        if ((step.ConsoleUri != null) && 
+            ((forceDownloadConsole == true || 
+            step.Result == TaskResult.Failed || 
+            step.Name == "Initialize containers" ||
+            step.Name.ToLower().Contains("helix"))))
         {
-            SubmitToUpload(document);
+            DateTime beginUriDownload = DateTime.Now;
+            step.Console = null;
+
+            try
+            {
+                step.Console = await Shared.GetAsync(step.ConsoleUri, retryCount: 1);
+            }
+            catch(Exception e)
+            {
+                // Unable to download console
+            }
+
+            DateTime endUriDownload = DateTime.Now;
+            elapsedUriDownloadTime = (endUriDownload - beginUriDownload).TotalMilliseconds;
+
+            bool containsHelixSubmissions = false;
+            if (step.Console != null)
+            {
+                if (step.Console.Contains("Waiting for completion of job "))
+                {
+                    containsHelixSubmissions = true;
+                }
+            }
+
+            if (step.Name.ToLower().Contains("helix") && containsHelixSubmissions)
+            {
+                step.IsHelixSubmission = true;
+            }
+
+            if (forceDownloadConsole != true && step.Result != TaskResult.Failed && step.Name != "Initialize containers" && !step.IsHelixSubmission)
+            {
+                // We do not want to save console logs for successful jobs
+                step.Console = null;
+            }
+        }
+
+        if (step.IsHelixSubmission && step.HelixModel == null)
+        {
+            if (step.Console == null)
+            {
+                return;
+            }
+
+            Debug.Assert(step.Console != null);
+
+            // Parse the console uri for the workitems
+            var split = step.Console.Split("Waiting for completion of job ");
+
+            List<string> jobs = new List<string>();
+            bool first = true;
+            foreach (var item in split)
+            {
+                if (first)
+                {
+                    first = false;
+                    continue;
+                }
+
+                jobs.Add(item.Split("\n")[0].Trim());
+            }
+
+            if (step.Id == null)
+            {
+                step.Id = Guid.NewGuid().ToString();
+            }
+
+            if ((DateTime.Now - step.DateStart).Days <= 10)
+            {
+                DateTime helixBeginTime = DateTime.Now;
+                HelixIO io = new HelixIO(HelixContainer, jobs, step.Name, step.Id);
+
+                CreatedHelixJobs = true;
+                var task = io.IngestData();
+                task.Wait();
+                step.HelixModel = task.Result;
+
+                foreach (var item in step.HelixModel)
+                {
+                    foreach (var workItemModel in item.WorkItems)
+                    {
+                        workItemModel.Console = null;
+                    }
+                }
+
+                step.HelixModel = null;
+                DateTime helixEndTime = DateTime.Now;
+
+                double totalSeconds = (helixEndTime - helixBeginTime).TotalMilliseconds;
+                Console.WriteLine($"[{++DownloadedJobs}]: Helix workItems: {totalSeconds}");
+            }
+        }
+
+        DateTime endTime = DateTime.Now;
+        double elapsedTime = (endTime - beginTime).TotalMilliseconds;
+
+        bool logAll = false;
+        if (elapsedTime > 1000 | logAll)
+        {
+            Console.WriteLine($"[{step.Name}]: Processed in {elapsedTime}. Downloaded console in {elapsedUriDownloadTime}.");
         }
     }
 
