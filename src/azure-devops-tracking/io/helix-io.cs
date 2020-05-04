@@ -50,8 +50,12 @@ public class HelixIO
         {
             if (Uploader == null)
             {
+                Action<HelixWorkItemModel> trimDoc = (HelixWorkItemModel document) => {
+                    Debug.Assert(document.ToString().Length < 2000000);
+                };
+
                 Queue = new TreeQueue<HelixWorkItemModel>(maxLeafSize: 50);
-                Uploader = new CosmosUpload<HelixWorkItemModel>("[Helix Work Item Model Upload]", GlobalLock, helixContainer, Queue, (HelixWorkItemModel document) => { return document.Name; });
+                Uploader = new CosmosUpload<HelixWorkItemModel>("[Helix Work Item Model Upload]", GlobalLock, helixContainer, Queue, (HelixWorkItemModel document) => { return document.Name; }, trimDoc);
             }
         }
     }
@@ -121,7 +125,7 @@ public class HelixIO
             string workItemDetailResponse = null;
             try
             {
-                workItemDetailResponse = Shared.Get(workitemsUri, retryCount: 1);
+                workItemDetailResponse = await Shared.GetAsync(workitemsUri, retryCount: 1);
             }
             catch (Exception e)
             {
@@ -167,7 +171,7 @@ public class HelixIO
         string workItemDetailsStr = null;
         try
         {
-            workItemDetailsStr = Shared.Get(item.DetailsUrl, retryCount: 1);
+            workItemDetailsStr = await Shared.GetAsync(item.DetailsUrl, retryCount: 1);
         }
         catch (Exception e)
         {

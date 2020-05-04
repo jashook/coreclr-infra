@@ -731,7 +731,7 @@ public class AzureDevopsTracking
         Queue<AzureDevOpsJobModel> jobQueue = new Queue<AzureDevOpsJobModel>();
 
         TreeQueue<RuntimeModel> queue = new TreeQueue<RuntimeModel>(maxLeafSize: 10);
-        CosmosUpload<RuntimeModel> uploader = new CosmosUpload<RuntimeModel>("[Runtime Model Upload]", new object(), RuntimeContainer, queue, (RuntimeModel doc) => { return doc.BuildReasonString; });
+        CosmosUpload<RuntimeModel> uploader = new CosmosUpload<RuntimeModel>("[Runtime Model Upload]", new object(), RuntimeContainer, queue, (RuntimeModel doc) => { return doc.BuildReasonString; }, (RuntimeModel doc) => { });
 
         foreach (var model in models)
         {

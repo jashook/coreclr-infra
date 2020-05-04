@@ -46,7 +46,10 @@ public class AzureDevOpsJobModel : IDocument
 
     public string PipelineId { get; set; }
 
-    public override string ToString() => Name + $" ({ElapsedTime:0.##}) -> {Result}";
+    public override string ToString()
+    {
+        return JsonConvert.SerializeObject(this);
+    }
 }
 
 class JobComparer : IComparer<AzureDevOpsJobModel>

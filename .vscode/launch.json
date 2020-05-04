@@ -18,7 +18,7 @@
             "preLaunchTask": "build",
             "program": "${workspaceFolder}/src/azure-devops-tracking/bin/Debug/netcoreapp3.1/azure-devops-tracking.dll",
             "args": [
-                "--recreate-db"
+                //"--recreate-db"
                 // "--re-update",
                 // "--timespan",
                 // "-1d"

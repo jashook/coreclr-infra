@@ -42,9 +42,29 @@ public class JobIO
             if (Uploader == null)
             {
                 Func<AzureDevOpsJobModel, string> getPartitionKey = (AzureDevOpsJobModel document) => { return document.Name; };
+                Action<AzureDevOpsJobModel> trimDoc = (AzureDevOpsJobModel document) => {
+                    long roughMaxSize = 1800000; // 2,000,000 bytes (2mb)
+
+                    int maxStepSize = (int)Math.Floor((double)(roughMaxSize / document.Steps.Count));
+
+                    foreach (var step in document.Steps)
+                    {
+                        if (step.Console != null)
+                        {
+                            int maxIndex = maxStepSize - 1;
+
+                            if (step.Console.Length > maxIndex)
+                            {
+                                step.Console = step.Console.Substring(0, maxIndex);
+                            }
+                        }
+                    }
+
+                    Debug.Assert(document.ToString().Length < CosmosUpload<AzureDevOpsJobModel>.CapSize);
+                };
 
                 Queue = new TreeQueue<AzureDevOpsJobModel>(maxLeafSize: 50);
-                Uploader = new CosmosUpload<AzureDevOpsJobModel>("[Azure Dev Ops Job Model Upload]", GlobalLock, db.GetContainer("runtime-jobs"), Queue, getPartitionKey);
+                Uploader = new CosmosUpload<AzureDevOpsJobModel>("[Azure Dev Ops Job Model Upload]", GlobalLock, db.GetContainer("runtime-jobs"), Queue, getPartitionKey, trimDoc);
             }
         }
 
