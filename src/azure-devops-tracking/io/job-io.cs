@@ -249,7 +249,8 @@ public class JobIO
                 step.Id = Guid.NewGuid().ToString();
             }
 
-            if ((DateTime.Now - step.DateStart).Days <= 10)
+            TimeSpan passedTime = DateTime.Now - step.DateStart;
+            if (passedTime.Days <= 8)
             {
                 DateTime helixBeginTime = DateTime.Now;
                 HelixIO io = new HelixIO(HelixContainer, jobs, step.Name, step.Id);

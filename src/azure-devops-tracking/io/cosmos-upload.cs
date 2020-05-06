@@ -115,7 +115,6 @@ public class CosmosUpload<T> where T : IDocument
     private static Action<T> TrimDoc { get; set; }
 
     private static List<T> Documents = new List<T>();
-    private static int DocumentIndex = 0;
 
     private static bool RunningUpload = false;
     private static TreeQueue<T> UploadQueue { get; set; }
@@ -136,7 +135,7 @@ public class CosmosUpload<T> where T : IDocument
             docToInsertSize = document.ToString().Length;
         }
 
-        if (DocumentSize + docToInsertSize >= CapSize || (Documents.Count - DocumentsIndex) > 90)
+        if (DocumentSize + docToInsertSize >= CapSize || Documents.Count > 90)
         {
             Debug.Assert(DocumentSize < CapSize);
             await DrainCosmosOperations();
@@ -149,44 +148,63 @@ public class CosmosUpload<T> where T : IDocument
     private static async Task DrainCosmosOperations()
     {
         List<Task<OperationResponse<T>>> cosmosOperations = new List<Task<OperationResponse<T>>>();
-        for (var do in Documents)
+        foreach (var document in Documents)
         {
             cosmosOperations.Add(HelixContainer.CreateItemAsync<T>(document, new PartitionKey(GetPartitionKey(document))).CaptureOperationResponse(document));
         }
 
+        bool encounteredError = false;
 
-        BulkOperationResponse<T> helixBulkOperationResponse = await Shared.ExecuteTasksAsync(cosmosOperations);
-        Console.WriteLine($"{PrefixMessage}: Bulk update operation finished in {helixBulkOperationResponse.TotalTimeTaken}");
-        Console.WriteLine($"{PrefixMessage}: Consumed {helixBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
-        Console.WriteLine($"{PrefixMessage}: Created {helixBulkOperationResponse.SuccessfulDocuments} documents");
-        Console.WriteLine($"{PrefixMessage}: Failed {helixBulkOperationResponse.Failures.Count} documents");
-
-        DocumentIndex = Documents.Count;
-        DocumentSize = 0;
-
-        if (helixBulkOperationResponse.Failures.Count > 0)
+        do
         {
-            Console.WriteLine($"{PrefixMessage}: First failed sample document {helixBulkOperationResponse.Failures[0].Item1.Name} - {helixBulkOperationResponse.Failures[0].Item2}");
-
-            lock(UploadLock)
+            BulkOperationResponse<T> helixBulkOperationResponse = null;
+            try
             {
-                foreach (var operationFailure in helixBulkOperationResponse.Failures)
-                {
-                    CosmosException cosmosException = (CosmosException)operationFailure.Item2;
+                helixBulkOperationResponse = await Shared.ExecuteTasksAsync(cosmosOperations);
+                Console.WriteLine($"{PrefixMessage}: Bulk update operation finished in {helixBulkOperationResponse.TotalTimeTaken}");
+                Console.WriteLine($"{PrefixMessage}: Consumed {helixBulkOperationResponse.TotalRequestUnitsConsumed} RUs in total");
+                Console.WriteLine($"{PrefixMessage}: Created {helixBulkOperationResponse.SuccessfulDocuments} documents");
+                Console.WriteLine($"{PrefixMessage}: Failed {helixBulkOperationResponse.Failures.Count} documents");
+            }
+            catch (Exception e)
+            {
+                // This is generally a timeout of some sort. We will wait and retry
 
-                    if (cosmosException.StatusCode != HttpStatusCode.Conflict)
-                    {
-                        // Ignore conflicts
-                        UploadQueue.Enqueue(operationFailure.Item1);
-                    }
-                }
+                encounteredError = true;
+                Thread.Sleep(5 * 1000);
             }
 
-            Thread.Sleep(10 * 1000);
-        }
+            if (!encounteredError)
+            {
+                DocumentSize = 0;
+                Documents.Clear();
 
-        SuccessfulDocumentCount += helixBulkOperationResponse.SuccessfulDocuments;
-        FailedDocumentCount += helixBulkOperationResponse.Failures.Count;
+                if (helixBulkOperationResponse.Failures.Count > 0)
+                {
+                    Console.WriteLine($"{PrefixMessage}: First failed sample document {helixBulkOperationResponse.Failures[0].Item1.Name} - {helixBulkOperationResponse.Failures[0].Item2}");
+
+                    lock(UploadLock)
+                    {
+                        foreach (var operationFailure in helixBulkOperationResponse.Failures)
+                        {
+                            CosmosException cosmosException = (CosmosException)operationFailure.Item2;
+
+                            if (cosmosException.StatusCode != HttpStatusCode.Conflict)
+                            {
+                                // Ignore conflicts
+                                Documents.Add(operationFailure.Item1);
+                            }
+                        }
+                    }
+
+                    Thread.Sleep(10 * 1000);
+                }
+                SuccessfulDocumentCount += helixBulkOperationResponse.SuccessfulDocuments;
+                FailedDocumentCount += helixBulkOperationResponse.Failures.Count;
+            }
+            
+        } while (encounteredError);
+        
     }
 
     private static void Upload(TreeQueue<T> queue)
@@ -219,8 +237,8 @@ public class CosmosUpload<T> where T : IDocument
         {
             GetPartitionKey = null;
 
-            CosmosOperations = null;
-            CosmosRetryOperations = null;
+            Debug.Assert(Documents.Count == 0);
+            Documents.Clear();
 
             RunningUpload = false;
         }
