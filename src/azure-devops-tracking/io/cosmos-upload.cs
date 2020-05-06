@@ -121,6 +121,8 @@ public class CosmosUpload<T> where T : IDocument
     private static Thread UploadThread { get; set; }
     private static object UploadLock { get; set; }
 
+    private static bool WaitForUpload { get; set; }
+
     ////////////////////////////////////////////////////////////////////////////
     // Upload
     ////////////////////////////////////////////////////////////////////////////
