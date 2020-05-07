@@ -55,7 +55,7 @@ public class HelixIO
                 };
 
                 Queue = new TreeQueue<HelixWorkItemModel>(maxLeafSize: 50);
-                Uploader = new CosmosUpload<HelixWorkItemModel>("[Helix Work Item Model Upload]", GlobalLock, helixContainer, Queue, (HelixWorkItemModel document) => { return document.Name; }, trimDoc);
+                Uploader = new CosmosUpload<HelixWorkItemModel>("[Helix Work Item Model Upload]", GlobalLock, helixContainer, Queue, (HelixWorkItemModel document) => { return document.Name; }, trimDoc, waitForUpload: true);
             }
         }
     }
@@ -95,7 +95,7 @@ public class HelixIO
             string workitemsUri = $"{helixApiString}/{job}/workitems";
 
             DateTime beginSummary = DateTime.Now;
-            string summaryResponse = await Shared.GetAsync(summaryUri, retryCount: 1);
+            string summaryResponse = await Shared.GetAsync(summaryUri, retryCount: 10);
             DateTime endSummary = DateTime.Now;
 
             double elapsedSummaryTime = (endSummary - beginSummary).TotalMilliseconds;
@@ -125,7 +125,7 @@ public class HelixIO
             string workItemDetailResponse = null;
             try
             {
-                workItemDetailResponse = await Shared.GetAsync(workitemsUri, retryCount: 1);
+                workItemDetailResponse = await Shared.GetAsync(workitemsUri, retryCount: 10);
             }
             catch (Exception e)
             {
@@ -144,6 +144,12 @@ public class HelixIO
             List<Task> tasks = new List<Task>();
             foreach (var item in workItems)
             {
+                if (tasks.Count > 100)
+                {
+                    await Task.WhenAll(tasks);
+                    tasks.Clear();
+                }
+
                 tasks.Add(UploadHelixWorkItem(item, modelLock, model));
             }
 
@@ -171,7 +177,7 @@ public class HelixIO
         string workItemDetailsStr = null;
         try
         {
-            workItemDetailsStr = await Shared.GetAsync(item.DetailsUrl, retryCount: 1);
+            workItemDetailsStr = await Shared.GetAsync(item.DetailsUrl, retryCount: 10);
         }
         catch (Exception e)
         {
@@ -205,7 +211,7 @@ public class HelixIO
             bool continueDueToException = false;
             try
             {
-                helixRunnerLog = await Shared.GetAsync(logUri, retryCount: 1);
+                helixRunnerLog = await Shared.GetAsync(logUri, retryCount: 10);
             }
             catch (Exception e)
             {
@@ -340,7 +346,7 @@ public class HelixIO
                 
                 try
                 {
-                    workItemModel.Console = await Shared.GetAsync(workItem.ConsoleOutputUri, retryCount: 1);
+                    workItemModel.Console = await Shared.GetAsync(workItem.ConsoleOutputUri, retryCount: 10);
                 }
                 catch(Exception e)
                 {

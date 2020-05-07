@@ -46,7 +46,7 @@ public class CosmosUpload<T> where T : IDocument
     // Constructor
     ////////////////////////////////////////////////////////////////////////////
 
-    public CosmosUpload(string prefixMessage, object uploadLock, Container helixContainer, TreeQueue<T> uploadQueue, Func<T, string> getPartitionKey, Action<T> trimDoc)
+    public CosmosUpload(string prefixMessage, object uploadLock, Container helixContainer, TreeQueue<T> uploadQueue, Func<T, string> getPartitionKey, Action<T> trimDoc, bool waitForUpload = false)
     {
         if (!RunningUpload)
         {
@@ -70,6 +70,9 @@ public class CosmosUpload<T> where T : IDocument
                     CapSize = (long)2000000;
                     Documents.Clear();
 
+                    WaitForUpload = waitForUpload;
+                    UploadSignaled = false;
+
                     UploadThread = new Thread (() => Upload(UploadQueue));
                     UploadThread.Start();
                 }
@@ -88,8 +91,24 @@ public class CosmosUpload<T> where T : IDocument
     // Member functions
     ////////////////////////////////////////////////////////////////////////////
 
+    public void StartUpload()
+    {
+        lock(UploadLock)
+        {
+            UploadSignaled = true;
+        }
+    }
+
     public void Finish(bool join = true)
     {
+        lock(UploadLock)
+        {
+            if (!UploadSignaled)
+            {
+                StartUpload();
+            }
+        }
+
         UploadQueue.SignalToFinish();
 
         if (join)
@@ -121,6 +140,7 @@ public class CosmosUpload<T> where T : IDocument
     private static Thread UploadThread { get; set; }
     private static object UploadLock { get; set; }
 
+    private static bool UploadSignaled = false;
     private static bool WaitForUpload { get; set; }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -129,6 +149,22 @@ public class CosmosUpload<T> where T : IDocument
 
     private static async Task AddOperation(T document)
     {
+        if (WaitForUpload)
+        {
+            while (true)
+            {
+                lock(UploadLock)
+                {
+                    if (UploadSignaled)
+                    {
+                        break;
+                    }
+                }
+
+                Thread.Sleep(5 * 1000);
+            }
+        }
+
         int docToInsertSize = document.ToString().Length;
 
         if (docToInsertSize > CapSize)

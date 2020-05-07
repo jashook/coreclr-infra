@@ -587,7 +587,7 @@ public class AzureDevopsTracking
                 
                 if (step.Name.Contains("Evaluate paths for"))
                 {
-                    step.Console = Shared.Get(step.ConsoleUri, retryCount: 1);
+                    step.Console = await Shared.GetAsync(step.ConsoleUri, retryCount: 1);
                 }
             }
 
@@ -731,7 +731,7 @@ public class AzureDevopsTracking
         Queue<AzureDevOpsJobModel> jobQueue = new Queue<AzureDevOpsJobModel>();
 
         TreeQueue<RuntimeModel> queue = new TreeQueue<RuntimeModel>(maxLeafSize: 10);
-        CosmosUpload<RuntimeModel> uploader = new CosmosUpload<RuntimeModel>("[Runtime Model Upload]", new object(), RuntimeContainer, queue, (RuntimeModel doc) => { return doc.BuildReasonString; }, (RuntimeModel doc) => { });
+        CosmosUpload<RuntimeModel> uploader = new CosmosUpload<RuntimeModel>("[Runtime Model Upload]", new object(), RuntimeContainer, queue, (RuntimeModel doc) => { return doc.BuildReasonString; }, (RuntimeModel doc) => { }, waitForUpload: true);
 
         foreach (var model in models)
         {
@@ -755,8 +755,6 @@ public class AzureDevopsTracking
         Console.WriteLine("Uploading runtime models.");
         Console.WriteLine($"Total count: {models.Count}");
 
-        uploader.Finish(join: false);
-
         // Job uploads
 
         JobIO io = new JobIO(Db);
@@ -769,6 +767,7 @@ public class AzureDevopsTracking
         jobQueue = null;
 
         await io.UploadData(jobs);
+        uploader.Finish(join: true);
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -808,7 +807,7 @@ public class AzureDevopsTracking
             }
             catch (Exception e)
             {
-                
+
             }
         }
 

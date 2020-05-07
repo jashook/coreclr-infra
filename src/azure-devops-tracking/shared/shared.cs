@@ -89,7 +89,7 @@ public class Shared
 
     public static async Task<string> GetAsync(string uri, int retryCount = 1)
     {
-        while (retryCount-- != 0)
+        while (retryCount-- >= 0)
         {
             try
             {
@@ -105,9 +105,13 @@ public class Shared
             }
             catch (WebException e)
             {
-                if (e.Message.Contains("403") || retryCount == 0)
+                if (e.Message.Contains("403") || retryCount < 0)
                 {
                     throw e;
+                }
+                else
+                {
+                    Thread.Sleep(1000);
                 }
             }
         }

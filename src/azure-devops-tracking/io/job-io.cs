@@ -64,7 +64,7 @@ public class JobIO
                 };
 
                 Queue = new TreeQueue<AzureDevOpsJobModel>(maxLeafSize: 50);
-                Uploader = new CosmosUpload<AzureDevOpsJobModel>("[Azure Dev Ops Job Model Upload]", GlobalLock, db.GetContainer("runtime-jobs"), Queue, getPartitionKey, trimDoc);
+                Uploader = new CosmosUpload<AzureDevOpsJobModel>("[Azure Dev Ops Job Model Upload]", GlobalLock, db.GetContainer("runtime-jobs"), Queue, getPartitionKey, trimDoc, waitForUpload: true);
             }
         }
 
@@ -188,7 +188,7 @@ public class JobIO
 
             try
             {
-                step.Console = await Shared.GetAsync(step.ConsoleUri, retryCount: 1);
+                step.Console = await Shared.GetAsync(step.ConsoleUri, retryCount: 10);
             }
             catch(Exception e)
             {
