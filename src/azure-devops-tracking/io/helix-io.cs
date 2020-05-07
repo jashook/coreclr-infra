@@ -234,8 +234,8 @@ public class HelixIO
 
                 string setupEndStr = splitStringLines[splitStringLines.Length - 1].Split(delim)[0];
 
-                setupBeginStr = Regex.Replace(setupBeginStr, @"\s+", "0");
-                setupEndStr = Regex.Replace(setupEndStr, @"\s+", "0");
+                setupBeginStr = Regex.Replace(setupBeginStr, @"\s", "0");
+                setupEndStr = Regex.Replace(setupEndStr, @"\s", "0");
 
                 if (delim == ": ")
                 {
@@ -250,8 +250,8 @@ public class HelixIO
                 }
                 else
                 {
-                    setupBeginStr = Regex.Replace(setupBeginStr, @"\s+", "0");
-                    setupEndStr = Regex.Replace(setupEndStr, @"\s+", "0");
+                    setupBeginStr = Regex.Replace(setupBeginStr, @"\s", "0");
+                    setupEndStr = Regex.Replace(setupEndStr, @"\s", "0");
                 }
 
                 try
@@ -290,8 +290,8 @@ public class HelixIO
                 }
                 else
                 {
-                    setupBeginStr = Regex.Replace(setupBeginStr, @"\s+", "0");
-                    setupEndStr = Regex.Replace(setupEndStr, @"\s+", "0");
+                    setupBeginStr = Regex.Replace(setupBeginStr, @"\s", "0");
+                    setupEndStr = Regex.Replace(setupEndStr, @"\s", "0");
                 }
 
                 try
@@ -326,7 +326,7 @@ public class HelixIO
             }
             else
             {
-                runtimeEndStr = Regex.Replace(runtimeEndStr, @"\s+", "0");
+                runtimeEndStr = Regex.Replace(runtimeEndStr, @"\s", "0");
             }
             
 
