@@ -87,9 +87,10 @@ public class Shared
         return null;
     }
 
-    public static async Task<string> GetAsync(string uri, int retryCount = 1)
+    public static async Task<string> GetAsync(string uri, int retryCount = 60)
     {
-        while (retryCount-- >= 0)
+        int retryIterations = 1;
+        while (retryIterations < retryCount + 1)
         {
             try
             {
@@ -105,13 +106,20 @@ public class Shared
             }
             catch (WebException e)
             {
+                int timeoutAmount = (int)Math.Pow((double)retryIterations, 2);
+                if (timeoutAmount < 10)
+                {
+                    timeoutAmount = 10;
+                }
+
                 if (e.Message.Contains("403") || retryCount < 0)
                 {
                     throw e;
                 }
                 else
                 {
-                    Thread.Sleep(1000);
+                    Debug.Assert(timeoutAmount < 4000);
+                    Thread.Sleep(timeoutAmount);
                 }
             }
         }

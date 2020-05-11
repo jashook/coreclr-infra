@@ -95,7 +95,7 @@ public class HelixIO
             string workitemsUri = $"{helixApiString}/{job}/workitems";
 
             DateTime beginSummary = DateTime.Now;
-            string summaryResponse = await Shared.GetAsync(summaryUri, retryCount: 10);
+            string summaryResponse = await Shared.GetAsync(summaryUri);
             DateTime endSummary = DateTime.Now;
 
             double elapsedSummaryTime = (endSummary - beginSummary).TotalMilliseconds;
@@ -125,7 +125,7 @@ public class HelixIO
             string workItemDetailResponse = null;
             try
             {
-                workItemDetailResponse = await Shared.GetAsync(workitemsUri, retryCount: 10);
+                workItemDetailResponse = await Shared.GetAsync(workitemsUri);
             }
             catch (Exception e)
             {
@@ -140,20 +140,10 @@ public class HelixIO
             model.WorkItemCount = workItems.Count;
 
             helixSubmissions.Add(model);
-
-            List<Task> tasks = new List<Task>();
             foreach (var item in workItems)
             {
-                if (tasks.Count > 100)
-                {
-                    await Task.WhenAll(tasks);
-                    tasks.Clear();
-                }
-
-                tasks.Add(UploadHelixWorkItem(item, modelLock, model));
+                await UploadHelixWorkItem(item, modelLock, model);
             }
-
-            await Task.WhenAll(tasks);
         }
 
         return helixSubmissions;
@@ -177,7 +167,7 @@ public class HelixIO
         string workItemDetailsStr = null;
         try
         {
-            workItemDetailsStr = await Shared.GetAsync(item.DetailsUrl, retryCount: 10);
+            workItemDetailsStr = await Shared.GetAsync(item.DetailsUrl);
         }
         catch (Exception e)
         {
@@ -211,7 +201,7 @@ public class HelixIO
             bool continueDueToException = false;
             try
             {
-                helixRunnerLog = await Shared.GetAsync(logUri, retryCount: 10);
+                helixRunnerLog = await Shared.GetAsync(logUri);
             }
             catch (Exception e)
             {
@@ -346,7 +336,7 @@ public class HelixIO
                 
                 try
                 {
-                    workItemModel.Console = await Shared.GetAsync(workItem.ConsoleOutputUri, retryCount: 10);
+                    workItemModel.Console = await Shared.GetAsync(workItem.ConsoleOutputUri);
                 }
                 catch(Exception e)
                 {
@@ -369,10 +359,7 @@ public class HelixIO
             modelToAdd.RunBegin = workItemModel.RunBegin;
             modelToAdd.RunEnd = workItemModel.RunEnd;
             
-            lock (modelLock)
-            {
-                model.WorkItems.Add(modelToAdd);
-            }
+            model.WorkItems.Add(modelToAdd);
         }
 
         DateTime endHelixWorkItem = DateTime.Now;

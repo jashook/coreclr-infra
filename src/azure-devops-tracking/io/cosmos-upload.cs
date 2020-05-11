@@ -91,8 +91,14 @@ public class CosmosUpload<T> where T : IDocument
     // Member functions
     ////////////////////////////////////////////////////////////////////////////
 
-    public void StartUpload()
+    public void StartUpload(bool locked = false)
     {
+        if (locked)
+        {
+            UploadSignaled = true;
+            return;
+        }
+
         lock(UploadLock)
         {
             UploadSignaled = true;
@@ -105,7 +111,7 @@ public class CosmosUpload<T> where T : IDocument
         {
             if (!UploadSignaled)
             {
-                StartUpload();
+                StartUpload(locked: true);
             }
         }
 

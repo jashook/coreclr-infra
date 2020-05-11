@@ -711,6 +711,10 @@ public class AzureDevopsTracking
                             model.IsMonoRun = true;
                         }
                     }
+                    else if (step.Name.ToLower().Contains("runtimetests"))
+                    {
+                        // Do nothing/////
+                    }
                     else
                     {
                         // Unreached

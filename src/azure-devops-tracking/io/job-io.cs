@@ -188,7 +188,7 @@ public class JobIO
 
             try
             {
-                step.Console = await Shared.GetAsync(step.ConsoleUri, retryCount: 10);
+                step.Console = await Shared.GetAsync(step.ConsoleUri);
             }
             catch(Exception e)
             {
