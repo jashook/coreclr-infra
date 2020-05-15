@@ -89,6 +89,13 @@ public class Shared
 
     public static async Task<string> GetAsync(string uri, int retryCount = 60)
     {
+        Debug.Assert(Uri.IsWellFormedUriString(uri, UriKind.Absolute));
+
+        if (!Uri.IsWellFormedUriString(uri, UriKind.Absolute))
+        {
+            throw new Exception("Incorrect uri.");
+        }
+
         int retryIterations = 1;
         while (retryIterations < retryCount + 1)
         {
@@ -110,6 +117,11 @@ public class Shared
                 if (timeoutAmount < 10)
                 {
                     timeoutAmount = 10;
+                }
+
+                if (e.Message.Contains("500"))
+                {
+                    int i = 0;
                 }
 
                 if (e.Message.Contains("403") || retryCount < 0)

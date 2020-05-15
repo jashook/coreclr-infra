@@ -25,6 +25,10 @@ public class HelixWorkItemModel : IDocument
 {
     [JsonProperty(PropertyName = "id")]
     public string Id { get; set; }
+    public string HelixSubmissionId { get; set; }
+    public string StepId { get; set; }
+    public string JobId { get; set; }
+    public string RuntimePipelineId { get; set; }
     public string Console { get; set; }
     public double ElapsedSetupTime { get; set; }
     public double ElapsedRunTime { get; set; }
@@ -47,8 +51,11 @@ public class HelixWorkItemModel : IDocument
     
 }
 
-public class HelixSubmissionModel
+public class HelixSubmissionModel : IDocument
 {
+    [JsonProperty(PropertyName = "id")]
+    public string Id { get; set; }
+    public string Console { get; set; }
     public double ElapsedTime { get; set; }
     public DateTime End { get; set; }
     public string JobName { get; set; }
@@ -60,7 +67,6 @@ public class HelixSubmissionModel
     public DateTime Start { get; set; }
     public string Type { get; set; }
     public int WorkItemCount { get; set; }
-    public List<HelixWorkItemModel> WorkItems { get; set; }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

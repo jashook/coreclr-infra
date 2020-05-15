@@ -31,41 +31,40 @@ public class JobIO
 
     public JobIO(Database db)
     {   
-        HelixContainer = db.GetContainer("helix-jobs");
+        HelixContainer = db.GetContainer("helix-workitems");
+        HelixContainer = db.GetContainer("helix-submissions");
 
+        HelixSubmissions = new List<Tuple<string, AzureDevOpsStepModel, AzureDevOpsJobModel>>();
         DownloadedJobs = 0;
 
         CreatedHelixJobs = false;
 
-        lock(UploadLock)
+        if (Uploader == null)
         {
-            if (Uploader == null)
-            {
-                Func<AzureDevOpsJobModel, string> getPartitionKey = (AzureDevOpsJobModel document) => { return document.Name; };
-                Action<AzureDevOpsJobModel> trimDoc = (AzureDevOpsJobModel document) => {
-                    long roughMaxSize = 1800000; // 2,000,000 bytes (2mb)
+            Func<AzureDevOpsJobModel, string> getPartitionKey = (AzureDevOpsJobModel document) => { return document.Name; };
+            Action<AzureDevOpsJobModel> trimDoc = (AzureDevOpsJobModel document) => {
+                long roughMaxSize = 1800000; // 2,000,000 bytes (2mb)
 
-                    int maxStepSize = (int)Math.Floor((double)(roughMaxSize / document.Steps.Count));
+                int maxStepSize = (int)Math.Floor((double)(roughMaxSize / document.Steps.Count));
 
-                    foreach (var step in document.Steps)
+                foreach (var step in document.Steps)
+                {
+                    if (step.Console != null)
                     {
-                        if (step.Console != null)
-                        {
-                            int maxIndex = maxStepSize - 1;
+                        int maxIndex = maxStepSize - 1;
 
-                            if (step.Console.Length > maxIndex)
-                            {
-                                step.Console = step.Console.Substring(0, maxIndex);
-                            }
+                        if (step.Console.Length > maxIndex)
+                        {
+                            step.Console = step.Console.Substring(0, maxIndex);
                         }
                     }
+                }
 
-                    Debug.Assert(document.ToString().Length < CosmosUpload<AzureDevOpsJobModel>.CapSize);
-                };
+                Debug.Assert(document.ToString().Length < Uploader.CapSize);
+            };
 
-                Queue = new TreeQueue<AzureDevOpsJobModel>(maxLeafSize: 50);
-                Uploader = new CosmosUpload<AzureDevOpsJobModel>("[Azure Dev Ops Job Model Upload]", GlobalLock, db.GetContainer("runtime-jobs"), Queue, getPartitionKey, trimDoc, waitForUpload: true);
-            }
+            Queue = new Queue<AzureDevOpsJobModel>();
+            Uploader = new CosmosUpload<AzureDevOpsJobModel>("[Azure Dev Ops Job Model Upload]", db.GetContainer("runtime-jobs"), Queue, getPartitionKey, trimDoc);
         }
 
     }
@@ -74,15 +73,15 @@ public class JobIO
     // Member variables
     ////////////////////////////////////////////////////////////////////////////
 
+    private List<Tuple<string, AzureDevOpsStepModel, AzureDevOpsJobModel>> HelixSubmissions;
     private Container HelixContainer { get; set; }
+    private Container SubmissionContainer { get; set; }
     public long DownloadedJobs { get; set; }
     public bool CreatedHelixJobs { get; set; }
     public List<string> Jobs { get; set; }
 
-    private static TreeQueue<AzureDevOpsJobModel> Queue = null;
+    private static Queue<AzureDevOpsJobModel> Queue = null;
     private static CosmosUpload<AzureDevOpsJobModel> Uploader = null;
-    private static object UploadLock = new object();
-    private static object GlobalLock = new object();
 
     ////////////////////////////////////////////////////////////////////////////
     // Member functions
@@ -116,9 +115,9 @@ public class JobIO
         double elapsedTime = (endTime - beginTime).TotalMinutes;
         Console.WriteLine($"Processed {total} jobs in {elapsedTime}m");
 
-        if (CreatedHelixJobs)
+        if (HelixSubmissions.Count > 0)
         {
-            HelixIO.SignalToFinish();
+            await UploadHelixWorkItems();
         }
 
         Uploader.Finish();
@@ -157,10 +156,10 @@ public class JobIO
     private async Task UploadDocument(AzureDevOpsJobModel document, bool forceInsert, bool forceDownloadConsole)
     {
         List<Task> tasks = new List<Task>();
-        
+
         foreach (AzureDevOpsStepModel step in document.Steps)
         {
-            tasks.Add(UploadStep(step, forceDownloadConsole));
+            tasks.Add(UploadStep(document, step, forceDownloadConsole));
         }
 
         DateTime jobStarted = DateTime.Now;
@@ -173,7 +172,7 @@ public class JobIO
         SubmitToUpload(document);
     }
 
-    private async Task UploadStep(AzureDevOpsStepModel step, bool forceDownloadConsole)
+    private async Task UploadStep(AzureDevOpsJobModel jobModel, AzureDevOpsStepModel step, bool forceDownloadConsole)
     {
         DateTime beginTime = DateTime.Now;
         double elapsedUriDownloadTime = 0;
@@ -219,7 +218,7 @@ public class JobIO
             }
         }
 
-        if (step.IsHelixSubmission && step.HelixModel == null)
+        if (step.IsHelixSubmission)
         {
             if (step.Console == null)
             {
@@ -241,7 +240,15 @@ public class JobIO
                     continue;
                 }
 
-                jobs.Add(item.Split("\n")[0].Trim());
+                var itemTrimmed = item.Split("\n")[0].Trim();
+                string taskRemoved = itemTrimmed;
+
+                if (itemTrimmed.Contains("TaskId"))
+                {
+                    taskRemoved = itemTrimmed.Split(" (TaskId")[0];
+                }
+
+                jobs.Add(taskRemoved);
             }
 
             if (step.Id == null)
@@ -252,27 +259,10 @@ public class JobIO
             TimeSpan passedTime = DateTime.Now - step.DateStart;
             if (passedTime.Days <= 8)
             {
-                DateTime helixBeginTime = DateTime.Now;
-                HelixIO io = new HelixIO(HelixContainer, jobs, step.Name, step.Id);
-
-                CreatedHelixJobs = true;
-                var task = io.IngestData();
-                task.Wait();
-                step.HelixModel = task.Result;
-
-                foreach (var item in step.HelixModel)
+                foreach (var item in jobs)
                 {
-                    foreach (var workItemModel in item.WorkItems)
-                    {
-                        workItemModel.Console = null;
-                    }
+                    HelixSubmissions.Add(new Tuple<string, AzureDevOpsStepModel, AzureDevOpsJobModel>(item, step, jobModel));
                 }
-
-                step.HelixModel = null;
-                DateTime helixEndTime = DateTime.Now;
-
-                double totalSeconds = (helixEndTime - helixBeginTime).TotalMilliseconds;
-                Console.WriteLine($"[{++DownloadedJobs}]: Helix workItems: {totalSeconds}");
             }
         }
 
@@ -286,11 +276,24 @@ public class JobIO
         }
     }
 
+    public async Task UploadHelixWorkItems()
+    {
+        DateTime helixBeginTime = DateTime.Now;
+        HelixIO io = new HelixIO(HelixContainer, SubmissionContainer);
+
+        Console.WriteLine($"Downloading {HelixSubmissions.Count} helix submissions.");
+
+        CreatedHelixJobs = true;
+        await io.IngestData(HelixSubmissions);
+
+        DateTime helixEndTime = DateTime.Now;
+
+        double totalSeconds = (helixEndTime - helixBeginTime).TotalMilliseconds;
+        Console.WriteLine($"Helix workItems: {totalSeconds}");
+    }
+
     private void SubmitToUpload(AzureDevOpsJobModel model)
     {
-        lock(UploadLock)
-        {
-            Queue.Enqueue(model);
-        }
+        Queue.Enqueue(model);
     }
 }

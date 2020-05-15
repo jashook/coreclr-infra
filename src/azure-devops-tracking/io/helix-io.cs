@@ -39,24 +39,23 @@ public class HelixIO
     // Constructor
     ////////////////////////////////////////////////////////////////////////////
 
-    public HelixIO(Container helixContainer, List<string> helixJobs, string jobName, string stepId)
+    public HelixIO(Container helixContainer, Container helixSubmissionContainer)
     {
-        HelixJobs = helixJobs;
-
-        JobName = jobName;
-        StepId = stepId;
-
-        lock(UploadLock)
+        if (Uploader == null)
         {
-            if (Uploader == null)
-            {
-                Action<HelixWorkItemModel> trimDoc = (HelixWorkItemModel document) => {
-                    Debug.Assert(document.ToString().Length < 2000000);
-                };
+            Action<HelixWorkItemModel> trimDoc = (HelixWorkItemModel document) => {
+                Debug.Assert(document.ToString().Length < 2000000);
+            };
 
-                Queue = new TreeQueue<HelixWorkItemModel>(maxLeafSize: 50);
-                Uploader = new CosmosUpload<HelixWorkItemModel>("[Helix Work Item Model Upload]", GlobalLock, helixContainer, Queue, (HelixWorkItemModel document) => { return document.Name; }, trimDoc, waitForUpload: true);
-            }
+            Action<HelixSubmissionModel> trimSubmissionDoc = (HelixSubmissionModel document) => {
+                Debug.Assert(document.ToString().Length < 2000000);
+            };
+
+            Queue = new Queue<HelixWorkItemModel>();
+            Uploader = new CosmosUpload<HelixWorkItemModel>("[Helix Work Item Model Upload]", helixContainer, Queue, (HelixWorkItemModel document) => { return document.Name; }, trimDoc);
+
+            SubmissionQueue = new Queue<HelixSubmissionModel>();
+            SubmissionUploader = new CosmosUpload<HelixSubmissionModel>("[Helix Submision Model Upload]", helixSubmissionContainer, SubmissionQueue, (HelixSubmissionModel document) => { return document.Name; }, trimSubmissionDoc);
         }
     }
 
@@ -64,104 +63,143 @@ public class HelixIO
     // Member variables
     ////////////////////////////////////////////////////////////////////////////
 
-    public List<string> HelixJobs { get; set; }
-    public string JobName { get; set; }
-    public string StepId { get; set; }
-
-    private static object FinishLock = new object();
-    private static TreeQueue<HelixWorkItemModel> Queue = null;
+    private static Queue<HelixWorkItemModel> Queue = null;
     private static CosmosUpload<HelixWorkItemModel> Uploader = null;
-    private static object UploadLock = new object();
-    private static object GlobalLock = new object();
+    private static Queue<HelixSubmissionModel> SubmissionQueue = null;
+    private static CosmosUpload<HelixSubmissionModel> SubmissionUploader = null;
 
     ////////////////////////////////////////////////////////////////////////////
     // Member functions
     ////////////////////////////////////////////////////////////////////////////
 
-    public async Task<List<HelixSubmissionModel>> IngestData()
+    // job, step id, step name
+    public async Task IngestData(List<Tuple<string, AzureDevOpsStepModel, AzureDevOpsJobModel>> helixJobs)
     {
-        Debug.Assert(HelixJobs.Count > 0);
+        Debug.Assert(helixJobs.Count > 0);
         List<HelixSubmissionModel> helixSubmissions = new List<HelixSubmissionModel>();
+        var allWorkItems = new List<Tuple<HelixWorkItemDetail, HelixSubmissionModel, AzureDevOpsJobModel>>();
 
-        foreach (var job in HelixJobs)
+        List<Task> tasks = new List<Task>();
+        foreach (var jobTuple in helixJobs)
         {
-            string helixApiString = "https://helix.dot.net/api/2019-06-17/jobs/";
-
-            HelixSubmissionModel model = new HelixSubmissionModel();
-            model.Passed = false;
-            model.Queues = new List<string>();
-
-            string summaryUri = $"{helixApiString}/{job}";
-            string workitemsUri = $"{helixApiString}/{job}/workitems";
-
-            DateTime beginSummary = DateTime.Now;
-            string summaryResponse = await Shared.GetAsync(summaryUri);
-            DateTime endSummary = DateTime.Now;
-
-            double elapsedSummaryTime = (endSummary - beginSummary).TotalMilliseconds;
-            Console.WriteLine($"[Helix] -- [{job}]: Downloaded in {elapsedSummaryTime} ms.");
-
-            HelixWorkItemSummary summary = JsonConvert.DeserializeObject<HelixWorkItemSummary>(summaryResponse);
-
-            if (summary.Finished == null || summary.Created == null)
-            {
-                continue;
-            }
-
-            model.End = DateTime.Parse(summary.Finished);
-            model.Start = DateTime.Parse(summary.Created);
-            model.ElapsedTime = (model.End - model.Start).TotalSeconds;
-
-            model.Name = summary.Name;
-            model.Passed = false;
-            model.Queues.Add(summary.Properties["operatingSystem"]);
-            model.Source = summary.Source;
-            model.Type = summary.Type;
-            model.WorkItems = new List<HelixWorkItemModel>();
-            model.StepId = StepId;
-
-            object modelLock = new object();
-
-            string workItemDetailResponse = null;
-            try
-            {
-                workItemDetailResponse = await Shared.GetAsync(workitemsUri);
-            }
-            catch (Exception e)
-            {
-                // Some issue with helix keeps us from downloading this item
-                continue;
-            }
-
-            string workItemJson = workItemDetailResponse;
-            List<HelixWorkItemDetail> workItems = JsonConvert.DeserializeObject<List<HelixWorkItemDetail>>(workItemJson);
-
-            Debug.Assert(workItemJson != null);
-            model.WorkItemCount = workItems.Count;
-
-            helixSubmissions.Add(model);
-            foreach (var item in workItems)
-            {
-                await UploadHelixWorkItem(item, modelLock, model);
-            }
+            tasks.Add(DownloadSubmission(jobTuple, helixSubmissions, allWorkItems));
         }
 
-        return helixSubmissions;
-    }
+        DateTime helixSubmissionsStartTime = DateTime.Now;
+        Console.WriteLine("Starting download helix submissions.");
+        await Task.WhenAll(tasks);
+        tasks.Clear();
 
-    public static void SignalToFinish()
-    {
+        DateTime helixSubmissionsEndTime = DateTime.Now;
+        double elapsedHelixSubmissionDownloadtime = (helixSubmissionsEndTime - helixSubmissionsStartTime).TotalSeconds;
+
+        Console.WriteLine($"Downloaded {helixSubmissions.Count} helix submissions in {elapsedHelixSubmissionDownloadtime}s");
+
+        List<HelixWorkItemModel> uploadedItems = new List<HelixWorkItemModel>();
+        List<HelixWorkItemModel> downloadedItems = new List<HelixWorkItemModel>();
+
+        int currentItem = 1;
+        int totalItems = allWorkItems.Count;
+        int limit = 1000;
+        foreach (var item in allWorkItems)
+        {
+            if (tasks.Count == limit)
+            {
+                await Task.WhenAll(tasks);
+                tasks.Clear();
+            }
+            Console.WriteLine($"[{currentItem++}:{totalItems}]: Started.");
+
+            Debug.Assert(downloadedItems != null);
+            Debug.Assert(uploadedItems != null);
+            Debug.Assert(item != null);
+
+            tasks.Add(UploadHelixWorkItem(downloadedItems, uploadedItems, item.Item1, item.Item2, item.Item3));
+        }
+
+        DateTime helixWorkitemDownloadStartTime = DateTime.Now;
+        Console.WriteLine("Starting download helix work items.");
+        await Task.WhenAll(tasks);
+
+        DateTime helixWorkitemDownloadEndTime = DateTime.Now;
+        double elapsedHelixWorkItemDownloadtime = (helixWorkitemDownloadEndTime - helixWorkitemDownloadStartTime).TotalSeconds;
+
+        Console.WriteLine($"Downloaded {downloadedItems.Count} helix submissions in {elapsedHelixSubmissionDownloadtime}s");
+        Console.WriteLine($"Uploaded {uploadedItems.Count}");
+
+        // Upload
+        SubmissionUploader.Finish();
         Uploader.Finish();
-        Uploader = null;
-
-        Debug.Assert(Uploader == null);
     }
 
     ////////////////////////////////////////////////////////////////////////////
     // Helper functions
     ////////////////////////////////////////////////////////////////////////////
 
-    private async Task UploadHelixWorkItem(HelixWorkItemDetail item, object modelLock, HelixSubmissionModel model)
+    private async Task DownloadSubmission(Tuple<string, AzureDevOpsStepModel, AzureDevOpsJobModel> jobTuple, List<HelixSubmissionModel> helixSubmissions, List<Tuple<HelixWorkItemDetail, HelixSubmissionModel, AzureDevOpsJobModel>> allWorkItems)
+    {
+        var job = jobTuple.Item1;
+        string helixApiString = "https://helix.dot.net/api/2019-06-17/jobs/";
+
+        HelixSubmissionModel model = new HelixSubmissionModel();
+        model.Id = Guid.NewGuid().ToString();
+
+        model.Passed = false;
+        model.Queues = new List<string>();
+
+        string summaryUri = $"{helixApiString}/{job}";
+        string workitemsUri = $"{helixApiString}/{job}/workitems";
+
+        DateTime beginSummary = DateTime.Now;
+        string summaryResponse = await Shared.GetAsync(summaryUri);
+        DateTime endSummary = DateTime.Now;
+
+        double elapsedSummaryTime = (endSummary - beginSummary).TotalMilliseconds;
+        Console.WriteLine($"[Helix] -- [{job}]: Downloaded in {elapsedSummaryTime} ms.");
+
+        HelixWorkItemSummary summary = JsonConvert.DeserializeObject<HelixWorkItemSummary>(summaryResponse);
+
+        if (summary.Finished == null || summary.Created == null)
+        {
+            return;
+        }
+
+        model.End = DateTime.Parse(summary.Finished);
+        model.Start = DateTime.Parse(summary.Created);
+        model.ElapsedTime = (model.End - model.Start).TotalSeconds;
+
+        model.Name = summary.Name;
+        model.Passed = false;
+        model.Queues.Add(summary.Properties["operatingSystem"]);
+        model.Source = summary.Source;
+        model.Type = summary.Type;
+        model.StepId = jobTuple.Item2.Id;
+
+        string workItemDetailResponse = null;
+        try
+        {
+            workItemDetailResponse = await Shared.GetAsync(workitemsUri);
+        }
+        catch (Exception e)
+        {
+            // Some issue with helix keeps us from downloading this item
+            return;
+        }
+
+        string workItemJson = workItemDetailResponse;
+        List<HelixWorkItemDetail> workItems = JsonConvert.DeserializeObject<List<HelixWorkItemDetail>>(workItemJson);
+
+        Debug.Assert(workItemJson != null);
+        model.WorkItemCount = workItems.Count;
+
+        helixSubmissions.Add(model);
+        foreach (var item in workItems)
+        {
+            allWorkItems.Add(new Tuple<HelixWorkItemDetail, HelixSubmissionModel, AzureDevOpsJobModel>(item, model, jobTuple.Item3));
+        }
+    }
+
+    private async Task UploadHelixWorkItem(List<HelixWorkItemModel> workItems, List<HelixWorkItemModel> uploadedItems, HelixWorkItemDetail item, HelixSubmissionModel model, AzureDevOpsJobModel jobModel)
     {
         DateTime startHelixWorkitem = DateTime.Now;
         string workItemDetailsStr = null;
@@ -182,6 +220,8 @@ public class HelixIO
         workItemModel.ExitCode = workItem.ExitCode;
         workItemModel.MachineName = workItem.MachineName;
         workItemModel.Name = workItem.Name;
+        workItemModel.JobId = jobModel.JobGuid;
+        workItemModel.RuntimePipelineId = jobModel.PipelineId;
 
         string logUri = null;
         foreach (var log in workItem.Logs)
@@ -213,7 +253,17 @@ public class HelixIO
                 return;
             }
 
-            string delim = helixRunnerLog.Contains("_dump_file_upload") ? "\t" : ": ";
+            string delim = "\t";
+            var zSplit = helixRunnerLog.Split('Z');
+            if (zSplit[1][0] != '\t')
+            {
+                Debug.Assert(!helixRunnerLog.Contains("_dump_file_upload"));
+                delim = ": ";
+            }
+            else
+            {
+                Debug.Assert(zSplit[1][1] == 'I');
+            }
 
             string setupBeginStr = helixRunnerLog.Split(delim)[0];
 
@@ -345,9 +395,10 @@ public class HelixIO
             }
             workItemModel.Id = Guid.NewGuid().ToString();
 
-            workItemModel.JobName = JobName;
+            workItemModel.JobName = jobModel.Name;
 
             SubmitToUpload(workItemModel);
+            uploadedItems.Add(workItemModel);
 
             modelToAdd.Id = workItemModel.Id;
             modelToAdd.ElapsedRunTime = workItemModel.ElapsedRunTime;
@@ -359,21 +410,19 @@ public class HelixIO
             modelToAdd.RunBegin = workItemModel.RunBegin;
             modelToAdd.RunEnd = workItemModel.RunEnd;
             
-            model.WorkItems.Add(modelToAdd);
+            modelToAdd.HelixSubmissionId = model.Id;
         }
 
         DateTime endHelixWorkItem = DateTime.Now;
         double elapsedTime = (endHelixWorkItem - startHelixWorkitem).TotalMilliseconds;
 
+        workItems.Add(modelToAdd);
         Console.WriteLine($"[Helix Workitem] -- [{modelToAdd.Name}]:  in {elapsedTime} ms");
     }
 
     private void SubmitToUpload(HelixWorkItemModel model)
     {
-        lock(UploadLock)
-        {
-            Queue.Enqueue(model);
-        }
+        Queue.Enqueue(model);
     }
 
 }

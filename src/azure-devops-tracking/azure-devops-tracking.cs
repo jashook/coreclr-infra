@@ -118,11 +118,13 @@ public class AzureDevopsTracking
     private Container RuntimeContainer;
     private Container JobContainer;
     private Container HelixContainer;
+    private Container HelixSubmissionContainer;
 
     private static readonly string DatabaseName = "coreclr-infra";
     private static readonly string RuntimeContainerName = "runtime-pipelines";
     private static readonly string JobContainerName = "runtime-jobs";
-    private static readonly string HelixContainerName = "helix-jobs";
+    private static readonly string HelixContainerName = "helix-workitems";
+    private static readonly string HelixSubmissionContainerName = "helix-submissions";
 
     private static int conflicts = 0;
 
@@ -734,8 +736,8 @@ public class AzureDevopsTracking
     {
         Queue<AzureDevOpsJobModel> jobQueue = new Queue<AzureDevOpsJobModel>();
 
-        TreeQueue<RuntimeModel> queue = new TreeQueue<RuntimeModel>(maxLeafSize: 10);
-        CosmosUpload<RuntimeModel> uploader = new CosmosUpload<RuntimeModel>("[Runtime Model Upload]", new object(), RuntimeContainer, queue, (RuntimeModel doc) => { return doc.BuildReasonString; }, (RuntimeModel doc) => { }, waitForUpload: true);
+        Queue<RuntimeModel> queue = new Queue<RuntimeModel>();
+        CosmosUpload<RuntimeModel> uploader = new CosmosUpload<RuntimeModel>("[Runtime Model Upload]", RuntimeContainer, queue, (RuntimeModel doc) => { return doc.BuildReasonString; }, (RuntimeModel doc) => { });
 
         foreach (var model in models)
         {
@@ -771,7 +773,7 @@ public class AzureDevopsTracking
         jobQueue = null;
 
         await io.UploadData(jobs);
-        uploader.Finish(join: true);
+        uploader.Finish();
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -813,15 +815,26 @@ public class AzureDevopsTracking
             {
 
             }
+
+            try
+            {
+                await Db.GetContainer(HelixSubmissionContainerName).DeleteContainerAsync();
+            }
+            catch (Exception e)
+            {
+
+            }
         }
 
         ContainerProperties runtimeContainerProperties = new ContainerProperties(RuntimeContainerName, partitionKeyPath: "/BuildReasonString");
         ContainerProperties jobContainerProperties = new ContainerProperties(JobContainerName, partitionKeyPath: "/Name");
         ContainerProperties helixContainerProperties = new ContainerProperties(HelixContainerName, partitionKeyPath: "/Name");
+        ContainerProperties helixSubmissionContainerProperties = new ContainerProperties(HelixSubmissionContainerName, partitionKeyPath: "/Name");
 
         this.RuntimeContainer = await Db.CreateContainerIfNotExistsAsync(runtimeContainerProperties, throughput: 1000);
         this.JobContainer = await Db.CreateContainerIfNotExistsAsync(jobContainerProperties, throughput: 3000);
         this.HelixContainer = await Db.CreateContainerIfNotExistsAsync(helixContainerProperties, throughput: 1500);
+        this.HelixSubmissionContainer = await Db.CreateContainerIfNotExistsAsync(helixSubmissionContainerProperties, throughput: 500);
     }
 
 }

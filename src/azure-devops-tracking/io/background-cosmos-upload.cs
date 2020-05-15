@@ -30,35 +30,63 @@ namespace ev27 {
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-public class CosmosUpload<T> where T : IDocument
+public interface IDocument
+{
+    public string Id { get; set; }
+    public string Console { get; set; }
+    public string Name { get; set; }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
+public class BackgroundCosmosUpload<T> where T : IDocument
 {
     ////////////////////////////////////////////////////////////////////////////
     // Constructor
     ////////////////////////////////////////////////////////////////////////////
 
-    public CosmosUpload(string prefixMessage, 
-                                  Container helixContainer, 
-                                  Queue<T> uploadQueue, 
-                                  Func<T, string> getPartitionKey, 
-                                  Action<T> trimDoc)
+    public BackgroundCosmosUpload(string prefixMessage, 
+                        object uploadLock, 
+                        Container helixContainer, 
+                        TreeQueue<T> uploadQueue, 
+                        Func<T, string> getPartitionKey, 
+                        Action<T> trimDoc, 
+                        bool waitForUpload = false)
     {
-        PrefixMessage = prefixMessage;
-        
-        // There is a ~2mb limit for size and there can be roughly 200 active
-        // tasks at one time.
-        CapSize = (long)2000000;
+        if (!RunningUpload)
+        {
+            lock(uploadLock)
+            {
+                // Someone else could have beaten us in the lock
+                // if so do nothing.
+                if (!RunningUpload)
+                {
+                    UploadLock = uploadLock;
 
-        DocumentSize = 0;
-        SuccessfulDocumentCount = 0;
-        FailedDocumentCount = 0;
+                    GetPartitionKey = getPartitionKey;
+                    TrimDoc = trimDoc;
+                    PrefixMessage = prefixMessage;
+                    HelixContainer = helixContainer;
+                    UploadQueue = uploadQueue;
+                    RunningUpload = true;
 
-        HelixContainer = helixContainer;
+                    // There is a ~2mb limit for size and there can be roughly 200 active
+                    // tasks at one time.
+                    CapSize = (long)2000000;
+                    Documents.Clear();
 
-        GetPartitionKey = getPartitionKey;
-        TrimDoc = trimDoc;
+                    WaitForUpload = waitForUpload;
+                    UploadSignaled = false;
 
-        Documents = new List<T>();
-        UploadQueue = uploadQueue;
+                    UploadThread = new Thread (() => Upload(UploadQueue));
+                    UploadThread.Start();
+                }
+            }
+        }
+
+        Debug.Assert(UploadQueue != null);
+        Debug.Assert(UploadLock != null);
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -69,37 +97,86 @@ public class CosmosUpload<T> where T : IDocument
     // Member functions
     ////////////////////////////////////////////////////////////////////////////
 
-    public void Finish()
+    public void StartUpload(bool locked = false)
     {
-        int docCount = UploadQueue.Count;
-        Console.WriteLine($"Uploading: {docCount} documents");
-        Upload().Wait();
+        if (locked)
+        {
+            UploadSignaled = true;
+            return;
+        }
+
+        lock(UploadLock)
+        {
+            UploadSignaled = true;
+        }
+    }
+
+    public void Finish(bool join = true)
+    {
+        lock(UploadLock)
+        {
+            if (!UploadSignaled)
+            {
+                StartUpload(locked: true);
+            }
+        }
+
+        UploadQueue.SignalToFinish();
+
+        if (join)
+        {
+            UploadThread.Join();
+        }
     }
 
     ////////////////////////////////////////////////////////////////////////////
-    // Member variables
+    // Static variables
     ////////////////////////////////////////////////////////////////////////////
 
-    private string PrefixMessage { get; set; }
+    private static string PrefixMessage { get; set; }
 
-    public long CapSize { get; set; }
-    private long DocumentSize = 0;
-    private int SuccessfulDocumentCount = 0;
-    private int FailedDocumentCount = 0;
-    private Container HelixContainer { get; set; }
+    public static long CapSize { get; set; }
+    private static long DocumentSize = 0;
+    private static long RetrySize = 0;
+    private static int SuccessfulDocumentCount = 0;
+    private static int FailedDocumentCount = 0;
+    private static Container HelixContainer { get; set; }
 
-    private Func<T, string> GetPartitionKey { get; set; }
-    private Action<T> TrimDoc { get; set; }
-    private List<T> Documents { get; set; }
-    private Queue<T> UploadQueue { get; set; }
-    private Thread UploadThread { get; set; }
+    private static Func<T, string> GetPartitionKey { get; set; }
+    private static Action<T> TrimDoc { get; set; }
+
+    private static List<T> Documents = new List<T>();
+
+    private static bool RunningUpload = false;
+    private static TreeQueue<T> UploadQueue { get; set; }
+    private static Thread UploadThread { get; set; }
+    private static object UploadLock { get; set; }
+
+    private static bool UploadSignaled = false;
+    private static bool WaitForUpload { get; set; }
 
     ////////////////////////////////////////////////////////////////////////////
     // Upload
     ////////////////////////////////////////////////////////////////////////////
 
-    private async Task AddOperation(T document)
+    private static async Task AddOperation(T document)
     {
+        if (WaitForUpload)
+        {
+            while (true)
+            {
+                lock(UploadLock)
+                {
+                    if (UploadSignaled)
+                    {
+                        break;
+                    }
+                }
+
+                Thread.Sleep(5 * 1000);
+            }
+        }
+
         int docToInsertSize = document.ToString().Length;
 
         if (docToInsertSize > CapSize)
@@ -118,7 +195,7 @@ public class CosmosUpload<T> where T : IDocument
         Documents.Add(document);
     }
 
-    private async Task DrainCosmosOperations()
+    private static async Task DrainCosmosOperations()
     {
         List<Task<OperationResponse<T>>> cosmosOperations = new List<Task<OperationResponse<T>>>();
         foreach (var document in Documents)
@@ -156,14 +233,17 @@ public class CosmosUpload<T> where T : IDocument
                 {
                     Console.WriteLine($"{PrefixMessage}: First failed sample document {helixBulkOperationResponse.Failures[0].Item1.Name} - {helixBulkOperationResponse.Failures[0].Item2}");
 
-                    foreach (var operationFailure in helixBulkOperationResponse.Failures)
+                    lock(UploadLock)
                     {
-                        CosmosException cosmosException = (CosmosException)operationFailure.Item2;
-
-                        if (cosmosException.StatusCode != HttpStatusCode.Conflict)
+                        foreach (var operationFailure in helixBulkOperationResponse.Failures)
                         {
-                            // Ignore conflicts
-                            Documents.Add(operationFailure.Item1);
+                            CosmosException cosmosException = (CosmosException)operationFailure.Item2;
+
+                            if (cosmosException.StatusCode != HttpStatusCode.Conflict)
+                            {
+                                // Ignore conflicts
+                                Documents.Add(operationFailure.Item1);
+                            }
                         }
                     }
 
@@ -177,23 +257,41 @@ public class CosmosUpload<T> where T : IDocument
         
     }
 
-    private async Task Upload()
+    private static void Upload(TreeQueue<T> queue)
     {
         // This is the only consumer. We do not need to lock.
-        while (UploadQueue.Count != 0)
+
+        bool finished = false;
+        while (!finished)
         {
-            T model = UploadQueue.Dequeue();
+            T model = queue.Dequeue(() => {
+                if (queue.Finished)
+                {
+                    finished = true;
+                }
+                
+                Thread.Sleep(5000);
+            });
 
             if (model == null)
             {
-                await DrainCosmosOperations();
+                DrainCosmosOperations().Wait();
+                Debug.Assert(finished);
                 break;
             }
 
-            await AddOperation(model);
+            AddOperation(model).Wait();
         }
 
-        await DrainCosmosOperations();
+        lock (UploadLock)
+        {
+            GetPartitionKey = null;
+
+            Debug.Assert(Documents.Count == 0);
+            Documents.Clear();
+
+            RunningUpload = false;
+        }
     }
 
 }

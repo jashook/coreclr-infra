@@ -40,8 +40,6 @@ public class AzureDevOpsStepModel
 
     public bool IsHelixSubmission { get; set; }
 
-    public List<HelixSubmissionModel> HelixModel { get; set; }
-
     public string Machine { get; set; }
 
     public string StepGuid { get; set; }

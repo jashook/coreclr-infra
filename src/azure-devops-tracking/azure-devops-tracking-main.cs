@@ -38,7 +38,6 @@ public class AzureDevOpsTrackingMain
         }
         else
         {
-
             await tracker.Recalculate(recalculatePipelineElapsedTime: recalculatePipelineElapsedTime,
                                       redownloadLogs: redownloadLogs,
                                       begin: date);
