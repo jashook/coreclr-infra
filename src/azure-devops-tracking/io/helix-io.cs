@@ -90,6 +90,11 @@ public class HelixIO
         await Task.WhenAll(tasks);
         tasks.Clear();
 
+        foreach (var submission in helixSubmissions)
+        {
+            SubmissionQueue.Enqueue(submission);
+        }
+
         DateTime helixSubmissionsEndTime = DateTime.Now;
         double elapsedHelixSubmissionDownloadtime = (helixSubmissionsEndTime - helixSubmissionsStartTime).TotalSeconds;
 
@@ -100,7 +105,7 @@ public class HelixIO
 
         int currentItem = 1;
         int totalItems = allWorkItems.Count;
-        int limit = 1000;
+        int limit = 100;
         foreach (var item in allWorkItems)
         {
             if (tasks.Count == limit)
@@ -114,7 +119,7 @@ public class HelixIO
             Debug.Assert(uploadedItems != null);
             Debug.Assert(item != null);
 
-            tasks.Add(UploadHelixWorkItem(downloadedItems, uploadedItems, item.Item1, item.Item2, item.Item3));
+            tasks.Add(UploadHelixWorkItemTry(downloadedItems, uploadedItems, item.Item1, item.Item2, item.Item3));
         }
 
         DateTime helixWorkitemDownloadStartTime = DateTime.Now;
@@ -125,11 +130,11 @@ public class HelixIO
         double elapsedHelixWorkItemDownloadtime = (helixWorkitemDownloadEndTime - helixWorkitemDownloadStartTime).TotalSeconds;
 
         Console.WriteLine($"Downloaded {downloadedItems.Count} helix submissions in {elapsedHelixSubmissionDownloadtime}s");
-        Console.WriteLine($"Uploaded {uploadedItems.Count}");
+        Console.WriteLine($"To upload {uploadedItems.Count}");
 
         // Upload
-        SubmissionUploader.Finish();
-        Uploader.Finish();
+        await SubmissionUploader.Finish();
+        await Uploader.Finish();
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -199,6 +204,27 @@ public class HelixIO
         }
     }
 
+    private async Task UploadHelixWorkItemTry(List<HelixWorkItemModel> workItems, List<HelixWorkItemModel> uploadedItems, HelixWorkItemDetail item, HelixSubmissionModel model, AzureDevOpsJobModel jobModel)
+    {
+        bool failed = false;
+        try
+        {
+            await UploadHelixWorkItem(workItems, uploadedItems, item, model, jobModel);
+        }
+        catch(Exception e)
+        {
+            failed = true;
+            // First chance.
+            Console.WriteLine($"Encountered {e.Message}");
+        }
+
+        if (failed)
+        {
+            // Try again, but do not catch if there is an issue
+            await UploadHelixWorkItem(workItems, uploadedItems, item, model, jobModel);
+        }
+    }
+
     private async Task UploadHelixWorkItem(List<HelixWorkItemModel> workItems, List<HelixWorkItemModel> uploadedItems, HelixWorkItemDetail item, HelixSubmissionModel model, AzureDevOpsJobModel jobModel)
     {
         DateTime startHelixWorkitem = DateTime.Now;
@@ -255,14 +281,17 @@ public class HelixIO
 
             string delim = "\t";
             var zSplit = helixRunnerLog.Split('Z');
-            if (zSplit[1][0] != '\t')
+            if (zSplit.Length == 1)
             {
-                Debug.Assert(!helixRunnerLog.Contains("_dump_file_upload"));
                 delim = ": ";
             }
             else
             {
-                Debug.Assert(zSplit[1][1] == 'I');
+                if (zSplit[1][0] != '\t')
+                {
+                    Debug.Assert(!helixRunnerLog.Contains("_dump_file_upload"));
+                    delim = ": ";
+                }
             }
 
             string setupBeginStr = helixRunnerLog.Split(delim)[0];

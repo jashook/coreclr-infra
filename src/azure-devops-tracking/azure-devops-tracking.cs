@@ -773,7 +773,7 @@ public class AzureDevopsTracking
         jobQueue = null;
 
         await io.UploadData(jobs);
-        uploader.Finish();
+        await uploader.Finish();
     }
 
     ////////////////////////////////////////////////////////////////////////////

@@ -120,7 +120,7 @@ public class JobIO
             await UploadHelixWorkItems();
         }
 
-        Uploader.Finish();
+        await Uploader.Finish();
         Uploader = null;
 
         Debug.Assert(Uploader == null);
@@ -288,12 +288,19 @@ public class JobIO
 
         DateTime helixEndTime = DateTime.Now;
 
-        double totalSeconds = (helixEndTime - helixBeginTime).TotalMilliseconds;
-        Console.WriteLine($"Helix workItems: {totalSeconds}");
+        double totalMinutes = (helixEndTime - helixBeginTime).TotalMinutes;
+        Console.WriteLine($"Processed helix workItems in {totalMinutes}m");
     }
 
     private void SubmitToUpload(AzureDevOpsJobModel model)
     {
-        Queue.Enqueue(model);
+        try
+        {
+            Queue.Enqueue(model);
+        }
+        catch (Exception e)
+        {
+            Queue.Enqueue(model);
+        }
     }
 }

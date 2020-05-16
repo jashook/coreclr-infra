@@ -69,11 +69,11 @@ public class CosmosUpload<T> where T : IDocument
     // Member functions
     ////////////////////////////////////////////////////////////////////////////
 
-    public void Finish()
+    public async Task Finish()
     {
         int docCount = UploadQueue.Count;
         Console.WriteLine($"Uploading: {docCount} documents");
-        Upload().Wait();
+        await Upload();
     }
 
     ////////////////////////////////////////////////////////////////////////////

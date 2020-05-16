@@ -113,6 +113,7 @@ public class Shared
             }
             catch (WebException e)
             {
+                Console.WriteLine($"{e.Message}");
                 int timeoutAmount = (int)Math.Pow((double)retryIterations, 2);
                 if (timeoutAmount < 10)
                 {
@@ -130,8 +131,10 @@ public class Shared
                 }
                 else
                 {
+                    Console.WriteLine($"Task Delay {timeoutAmount}");
                     Debug.Assert(timeoutAmount < 4000);
-                    Thread.Sleep(timeoutAmount);
+                    await Task.Delay(timeoutAmount);
+                    Console.WriteLine("Task resumed.");
                 }
             }
         }
