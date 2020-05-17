@@ -96,9 +96,6 @@ public class HelixIO
         {
             SubmissionQueue.Enqueue(submission);
         }
-        
-        // Upload submissions.
-        await SubmissionUploader.Finish();
 
         DateTime helixSubmissionsEndTime = DateTime.Now;
         double elapsedHelixSubmissionDownloadtime = (helixSubmissionsEndTime - helixSubmissionsStartTime).TotalSeconds;
@@ -110,7 +107,7 @@ public class HelixIO
 
         int currentItem = 1;
         int totalItems = allWorkItems.Count;
-        int limit = 250;
+        int limit = 150;
         DateTime limitStart = DateTime.Now;
         foreach (var item in allWorkItems)
         {
@@ -142,6 +139,9 @@ public class HelixIO
 
         Console.WriteLine($"Downloaded {downloadedItems.Count} helix work items in {elapsedHelixWorkItemDownloadtime}m");
         Console.WriteLine($"To upload {uploadedItems.Count}");
+
+        // Upload submissions.
+        await SubmissionUploader.Finish();
 
         // Upload workitems
         await Uploader.Finish();
