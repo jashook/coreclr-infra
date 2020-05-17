@@ -107,13 +107,19 @@ public class HelixIO
 
         int currentItem = 1;
         int totalItems = allWorkItems.Count;
-        int limit = 100;
+        int limit = 250;
+        DateTime limitStart = DateTime.Now;
         foreach (var item in allWorkItems)
         {
             if (tasks.Count == limit)
             {
                 await Task.WhenAll(tasks);
                 tasks.Clear();
+                
+                DateTime limitEnd = DateTime.Now;
+                double elapsedLimitSecondselapsedSeconds = (limitEnd - limitStart).TotalSeconds;
+
+                Console.WriteLine($"[Helix WorkItem] -- {limit} downloaded in {elapsedLimitSeconds}s");
             }
             Console.WriteLine($"[{currentItem++}:{totalItems}]: Started.");
 
