@@ -96,6 +96,9 @@ public class HelixIO
         {
             SubmissionQueue.Enqueue(submission);
         }
+        
+        // Upload submissions.
+        await SubmissionUploader.Finish();
 
         DateTime helixSubmissionsEndTime = DateTime.Now;
         double elapsedHelixSubmissionDownloadtime = (helixSubmissionsEndTime - helixSubmissionsStartTime).TotalSeconds;
@@ -140,8 +143,7 @@ public class HelixIO
         Console.WriteLine($"Downloaded {downloadedItems.Count} helix work items in {elapsedHelixWorkItemDownloadtime}m");
         Console.WriteLine($"To upload {uploadedItems.Count}");
 
-        // Upload
-        await SubmissionUploader.Finish();
+        // Upload workitems
         await Uploader.Finish();
     }
 
