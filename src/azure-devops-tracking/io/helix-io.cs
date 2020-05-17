@@ -50,7 +50,7 @@ public class HelixIO
                 {
                     document.Console = document.Console.Substring(0, (int)roughMaxSize);
                 }
-                
+
                 Trace.Assert(document.ToString().Length < 2000000);
             };
 
@@ -87,11 +87,12 @@ public class HelixIO
         Trace.Assert(helixJobs.Count > 0);
         List<HelixSubmissionModel> helixSubmissions = new List<HelixSubmissionModel>();
         var allWorkItems = new List<Tuple<HelixWorkItemDetail, HelixSubmissionModel, AzureDevOpsJobModel>>();
+        object workItemLock = new object();
 
         List<Task> tasks = new List<Task>();
         foreach (var jobTuple in helixJobs)
         {
-            tasks.Add(DownloadSubmission(jobTuple, helixSubmissions, allWorkItems));
+            tasks.Add(DownloadSubmission(jobTuple, helixSubmissions, allWorkItems, workItemLock));
         }
 
         DateTime helixSubmissionsStartTime = DateTime.Now;
@@ -158,7 +159,7 @@ public class HelixIO
     // Helper functions
     ////////////////////////////////////////////////////////////////////////////
 
-    private async Task DownloadSubmission(Tuple<string, AzureDevOpsStepModel, AzureDevOpsJobModel> jobTuple, List<HelixSubmissionModel> helixSubmissions, List<Tuple<HelixWorkItemDetail, HelixSubmissionModel, AzureDevOpsJobModel>> allWorkItems)
+    private async Task DownloadSubmission(Tuple<string, AzureDevOpsStepModel, AzureDevOpsJobModel> jobTuple, List<HelixSubmissionModel> helixSubmissions, List<Tuple<HelixWorkItemDetail, HelixSubmissionModel, AzureDevOpsJobModel>> allWorkItems, object workItemLock)
     {
         var job = jobTuple.Item1;
         string helixApiString = "https://helix.dot.net/api/2019-06-17/jobs/";
@@ -215,9 +216,13 @@ public class HelixIO
         model.WorkItemCount = workItems.Count;
 
         helixSubmissions.Add(model);
-        foreach (var item in workItems)
+
+        lock(workItemLock)
         {
-            allWorkItems.Add(new Tuple<HelixWorkItemDetail, HelixSubmissionModel, AzureDevOpsJobModel>(item, model, jobTuple.Item3));
+            foreach (var item in workItems)
+            {
+                allWorkItems.Add(new Tuple<HelixWorkItemDetail, HelixSubmissionModel, AzureDevOpsJobModel>(item, model, jobTuple.Item3));
+            }
         }
     }
 

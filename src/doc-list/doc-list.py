@@ -65,7 +65,7 @@ def read_documents(client):
     # NOTE: Use MaxItemCount on Options to control how many documents come back per trip to the server
     #       Important to handle throttles whenever you are doing operations such as this that might
     #       result in a 429 (throttled request)
-    documentlist = list(client.ReadItems(collection_link, {'maxItemCount':100}))
+    documentlist = list(client.ReadItems(collection_link, {'maxItemCount':1000}))
     
     print('Found {0} documents'.format(documentlist.__len__()))
     
