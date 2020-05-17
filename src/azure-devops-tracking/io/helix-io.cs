@@ -44,6 +44,13 @@ public class HelixIO
         if (Uploader == null)
         {
             Action<HelixWorkItemModel> trimDoc = (HelixWorkItemModel document) => {
+                long roughMaxSize = 1800000; // 1,800,000 bytes (1.8mb)
+
+                if (document.Console.Length > roughMaxSize)
+                {
+                    document.Console = document.Console.Substring(0, (int)roughMaxSize);
+                }
+                
                 Trace.Assert(document.ToString().Length < 2000000);
             };
 

@@ -60,7 +60,7 @@ def read_helix_workitems_for_pipeline(client, pipeline_id=None):
 
 def read_documents(client):
     print('\n1.3 - Reading all documents in a collection\n')
-    collection_link = "dbs/coreclr-infra/colls/helix-submissions"
+    collection_link = "dbs/coreclr-infra/colls/helix-workitems"
 
     # NOTE: Use MaxItemCount on Options to control how many documents come back per trip to the server
     #       Important to handle throttles whenever you are doing operations such as this that might
