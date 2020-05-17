@@ -11,6 +11,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -435,8 +436,30 @@ public class HelixIO
             workItemModel.ElapsedSetupTime = (workItemModel.HelixWorkItemSetupEnd - workItemModel.HelixWorkItemSetupBegin).TotalMilliseconds;
             workItemModel.ElapsedRunTime = (workItemModel.RunEnd - workItemModel.RunBegin).TotalMilliseconds;
 
-            Trace.Assert(workItemModel.ElapsedRunTime > 0);
-            Trace.Assert(workItemModel.ElapsedSetupTime > 0);
+            Debug.Assert(workItemModel.ElapsedRunTime > 0);
+            Debug.Assert(workItemModel.ElapsedSetupTime > 0);
+
+            if (workItemModel.ElapsedRunTime < 0 || workItemModel.ElapsedSetupTime < 0)
+            {
+                string path = @"strange_uris.txt";
+                if (!File.Exists(path))
+                {
+                    // Create a file to write to.
+                    using (StreamWriter sw = File.CreateText(path))
+                    {
+                        sw.WriteLine($"{logUri}");
+                    }
+                }
+                else
+                {
+                    using (StreamWriter sw = File.AppendText(path))
+                    {
+                        sw.WriteLine($"{logUri}");
+                    }
+                }
+
+                return;
+            }
 
             if (workItemModel.ExitCode != 0)
             {
