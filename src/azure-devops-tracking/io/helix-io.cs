@@ -129,9 +129,9 @@ public class HelixIO
         await Task.WhenAll(tasks);
 
         DateTime helixWorkitemDownloadEndTime = DateTime.Now;
-        double elapsedHelixWorkItemDownloadtime = (helixWorkitemDownloadEndTime - helixWorkitemDownloadStartTime).TotalSeconds;
+        double elapsedHelixWorkItemDownloadtime = (helixWorkitemDownloadEndTime - helixWorkitemDownloadStartTime).TotalMinutes;
 
-        Console.WriteLine($"Downloaded {downloadedItems.Count} helix submissions in {elapsedHelixSubmissionDownloadtime}s");
+        Console.WriteLine($"Downloaded {downloadedItems.Count} helix work items in {elapsedHelixWorkItemDownloadtime}m");
         Console.WriteLine($"To upload {uploadedItems.Count}");
 
         // Upload

@@ -60,7 +60,7 @@ def read_helix_workitems_for_pipeline(client, pipeline_id=None):
 
 def read_documents(client):
     print('\n1.3 - Reading all documents in a collection\n')
-    collection_link = "dbs/coreclr-infra/colls/helix-jobs"
+    collection_link = "dbs/coreclr-infra/colls/helix-submissions"
 
     # NOTE: Use MaxItemCount on Options to control how many documents come back per trip to the server
     #       Important to handle throttles whenever you are doing operations such as this that might
@@ -102,7 +102,7 @@ def read_documents(client):
 def main():
     with IDisposable(cosmos_client.CosmosClient("https://coreclr-infra.documents.azure.com:443/", {'masterKey': os.environ["coreclrInfraKey"]} )) as client:
         try:
-            read_helix_workitems_for_pipeline(client)
+            read_documents(client)
 
         except errors.HTTPFailure as e:
             print('\nrun_sample has caught an error. {0}'.format(e))

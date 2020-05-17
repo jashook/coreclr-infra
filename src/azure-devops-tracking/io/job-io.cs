@@ -32,7 +32,7 @@ public class JobIO
     public JobIO(Database db)
     {   
         HelixContainer = db.GetContainer("helix-workitems");
-        HelixContainer = db.GetContainer("helix-submissions");
+        SubmissionContainer = db.GetContainer("helix-submissions");
 
         HelixSubmissions = new List<Tuple<string, AzureDevOpsStepModel, AzureDevOpsJobModel>>();
         DownloadedJobs = 0;
