@@ -113,6 +113,13 @@ public class HelixIO
         List<HelixWorkItemModel> uploadedItems = new List<HelixWorkItemModel>();
         List<HelixWorkItemModel> downloadedItems = new List<HelixWorkItemModel>();
 
+        foreach (var item in allWorkItems)
+        {
+            Trace.Assert(downloadedItems != null);
+            Trace.Assert(uploadedItems != null);
+            Trace.Assert(item != null);
+        }
+
         int currentItem = 1;
         int totalItems = allWorkItems.Count;
         int limit = 150;
