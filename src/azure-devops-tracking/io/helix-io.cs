@@ -117,7 +117,7 @@ public class HelixIO
                 tasks.Clear();
                 
                 DateTime limitEnd = DateTime.Now;
-                double elapsedLimitSecondselapsedSeconds = (limitEnd - limitStart).TotalSeconds;
+                double elapsedLimitSeconds = (limitEnd - limitStart).TotalSeconds;
 
                 Console.WriteLine($"[Helix WorkItem] -- {limit} downloaded in {elapsedLimitSeconds}s");
             }
