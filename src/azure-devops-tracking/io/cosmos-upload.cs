@@ -110,7 +110,7 @@ public class CosmosUpload<T> where T : IDocument
 
         if (DocumentSize + docToInsertSize >= CapSize || Documents.Count > 90)
         {
-            Debug.Assert(DocumentSize < CapSize);
+            Trace.Assert(DocumentSize < CapSize);
             await DrainCosmosOperations();
         }
 
@@ -179,6 +179,7 @@ public class CosmosUpload<T> where T : IDocument
 
     private async Task Upload()
     {
+        int beginDocumentsUploaded = SuccessfulDocumentCount;
         // This is the only consumer. We do not need to lock.
         while (UploadQueue.Count != 0)
         {
@@ -186,14 +187,17 @@ public class CosmosUpload<T> where T : IDocument
 
             if (model == null)
             {
-                await DrainCosmosOperations();
-                break;
+                Console.WriteLine("Found null document.");
+                continue;
             }
 
             await AddOperation(model);
         }
 
         await DrainCosmosOperations();
+
+        int totalDocumentsUploaded = SuccessfulDocumentCount - beginDocumentsUploaded;
+        Console.WriteLine($"Uploaded {totalDocumentsUploaded}.");
     }
 
 }

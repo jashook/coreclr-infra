@@ -85,8 +85,8 @@ public class BackgroundCosmosUpload<T> where T : IDocument
             }
         }
 
-        Debug.Assert(UploadQueue != null);
-        Debug.Assert(UploadLock != null);
+        Trace.Assert(UploadQueue != null);
+        Trace.Assert(UploadLock != null);
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -187,7 +187,7 @@ public class BackgroundCosmosUpload<T> where T : IDocument
 
         if (DocumentSize + docToInsertSize >= CapSize || Documents.Count > 90)
         {
-            Debug.Assert(DocumentSize < CapSize);
+            Trace.Assert(DocumentSize < CapSize);
             await DrainCosmosOperations();
         }
 
@@ -276,7 +276,7 @@ public class BackgroundCosmosUpload<T> where T : IDocument
             if (model == null)
             {
                 DrainCosmosOperations().Wait();
-                Debug.Assert(finished);
+                Trace.Assert(finished);
                 break;
             }
 
@@ -287,7 +287,7 @@ public class BackgroundCosmosUpload<T> where T : IDocument
         {
             GetPartitionKey = null;
 
-            Debug.Assert(Documents.Count == 0);
+            Trace.Assert(Documents.Count == 0);
             Documents.Clear();
 
             RunningUpload = false;

@@ -44,11 +44,11 @@ public class HelixIO
         if (Uploader == null)
         {
             Action<HelixWorkItemModel> trimDoc = (HelixWorkItemModel document) => {
-                Debug.Assert(document.ToString().Length < 2000000);
+                Trace.Assert(document.ToString().Length < 2000000);
             };
 
             Action<HelixSubmissionModel> trimSubmissionDoc = (HelixSubmissionModel document) => {
-                Debug.Assert(document.ToString().Length < 2000000);
+                Trace.Assert(document.ToString().Length < 2000000);
             };
 
             Queue = new Queue<HelixWorkItemModel>();
@@ -68,6 +68,8 @@ public class HelixIO
     private static Queue<HelixSubmissionModel> SubmissionQueue = null;
     private static CosmosUpload<HelixSubmissionModel> SubmissionUploader = null;
 
+    private static object HelixLock = new object();
+
     ////////////////////////////////////////////////////////////////////////////
     // Member functions
     ////////////////////////////////////////////////////////////////////////////
@@ -75,7 +77,7 @@ public class HelixIO
     // job, step id, step name
     public async Task IngestData(List<Tuple<string, AzureDevOpsStepModel, AzureDevOpsJobModel>> helixJobs)
     {
-        Debug.Assert(helixJobs.Count > 0);
+        Trace.Assert(helixJobs.Count > 0);
         List<HelixSubmissionModel> helixSubmissions = new List<HelixSubmissionModel>();
         var allWorkItems = new List<Tuple<HelixWorkItemDetail, HelixSubmissionModel, AzureDevOpsJobModel>>();
 
@@ -115,9 +117,9 @@ public class HelixIO
             }
             Console.WriteLine($"[{currentItem++}:{totalItems}]: Started.");
 
-            Debug.Assert(downloadedItems != null);
-            Debug.Assert(uploadedItems != null);
-            Debug.Assert(item != null);
+            Trace.Assert(downloadedItems != null);
+            Trace.Assert(uploadedItems != null);
+            Trace.Assert(item != null);
 
             tasks.Add(UploadHelixWorkItemTry(downloadedItems, uploadedItems, item.Item1, item.Item2, item.Item3));
         }
@@ -194,7 +196,7 @@ public class HelixIO
         string workItemJson = workItemDetailResponse;
         List<HelixWorkItemDetail> workItems = JsonConvert.DeserializeObject<List<HelixWorkItemDetail>>(workItemJson);
 
-        Debug.Assert(workItemJson != null);
+        Trace.Assert(workItemJson != null);
         model.WorkItemCount = workItems.Count;
 
         helixSubmissions.Add(model);
@@ -261,7 +263,7 @@ public class HelixIO
 
         if (logUri != null)
         {
-            Debug.Assert(logUri != null);
+            Trace.Assert(logUri != null);
 
             string helixRunnerLog = null;
             bool continueDueToException = false;
@@ -289,7 +291,7 @@ public class HelixIO
             {
                 if (zSplit[1][0] != '\t')
                 {
-                    Debug.Assert(!helixRunnerLog.Contains("_dump_file_upload"));
+                    Trace.Assert(!helixRunnerLog.Contains("_dump_file_upload"));
                     delim = ": ";
                 }
             }
@@ -335,7 +337,7 @@ public class HelixIO
                 }
                 catch (Exception e)
                 {
-                    Debug.Assert(false);
+                    Trace.Assert(false);
                 }
 
             }
@@ -375,7 +377,7 @@ public class HelixIO
                 }
                 catch (Exception e)
                 {
-                    Debug.Assert(false);
+                    Trace.Assert(false);
                 }
             }
 
@@ -406,8 +408,8 @@ public class HelixIO
             workItemModel.ElapsedSetupTime = (workItemModel.HelixWorkItemSetupEnd - workItemModel.HelixWorkItemSetupBegin).TotalMilliseconds;
             workItemModel.ElapsedRunTime = (workItemModel.RunEnd - workItemModel.RunBegin).TotalMilliseconds;
 
-            Debug.Assert(workItemModel.ElapsedRunTime > 0);
-            Debug.Assert(workItemModel.ElapsedSetupTime > 0);
+            Trace.Assert(workItemModel.ElapsedRunTime > 0);
+            Trace.Assert(workItemModel.ElapsedSetupTime > 0);
 
             if (workItemModel.ExitCode != 0)
             {
@@ -449,9 +451,22 @@ public class HelixIO
         Console.WriteLine($"[Helix Workitem] -- [{modelToAdd.Name}]:  in {elapsedTime} ms");
     }
 
+    private void SubmitToUploadSubmission(HelixSubmissionModel model)
+    {
+        Trace.Assert(model != null);
+        lock(HelixLock)
+        {
+            SubmissionQueue.Enqueue(model);
+        }
+    }
+
     private void SubmitToUpload(HelixWorkItemModel model)
     {
-        Queue.Enqueue(model);
+        Trace.Assert(model != null);
+        lock(HelixLock)
+        {
+            Queue.Enqueue(model);
+        }
     }
 
 }

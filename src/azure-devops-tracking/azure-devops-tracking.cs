@@ -402,7 +402,21 @@ public class AzureDevopsTracking
             686
         });
 
-        var runs = await GetRunsSince(lastRun, builds, limit);
+        List<RuntimeModel> runs = null;
+        
+        bool failed = false;
+        do
+        {
+            try
+            {
+                runs = await GetRunsSince(lastRun, builds, limit);
+                failed = false;
+            }
+            catch (Exception e)
+            {
+                failed = true;
+            }
+        } while (failed);
 
         int runsUploaded = 0;
         while (runs.Count > 0)
@@ -418,10 +432,21 @@ public class AzureDevopsTracking
                 });
             }
 
-            runs = await GetRunsSince(lastRun, builds, limit);
+            do
+            {
+                try
+                {
+                    runs = await GetRunsSince(lastRun, builds, limit);
+                    failed = false;
+                }
+                catch (Exception e)
+                {
+                    failed = true;
+                }
+            } while (failed);
         }
 
-        Debug.Assert(runs.Count == 0);
+        Trace.Assert(runs.Count == 0);
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -462,7 +487,7 @@ public class AzureDevopsTracking
 
     private async Task<List<RuntimeModel>> GetRunsSince(RuntimeModel lastRun, List<Build> builds, int limit = -1)
     {
-        Debug.Assert(builds != null);
+        Trace.Assert(builds != null);
 
         List<Build> filteredBuilds = new List<Build>();
         if (lastRun != null)
@@ -628,7 +653,7 @@ public class AzureDevopsTracking
             AzureDevOpsJobModel jobModel = kv.Value;
 
             // Populate the jobModel
-            Debug.Assert(records.ContainsKey(kv.Key));
+            Trace.Assert(records.ContainsKey(kv.Key));
             var record = records[kv.Key];
 
             if (record.StartTime == null) continue;
@@ -640,7 +665,7 @@ public class AzureDevopsTracking
             
             jobModel.JobGuid = record.Id;
 
-            Debug.Assert(record.Id == kv.Key);
+            Trace.Assert(record.Id == kv.Key);
 
             jobModel.Name = record.Name;
             jobModel.Result = record.Result;
@@ -720,7 +745,7 @@ public class AzureDevopsTracking
                     else
                     {
                         // Unreached
-                        Debug.Assert(false);
+                        Trace.Assert(false);
                     }
                 }
             }

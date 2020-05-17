@@ -60,7 +60,7 @@ public class JobIO
                     }
                 }
 
-                Debug.Assert(document.ToString().Length < Uploader.CapSize);
+                Trace.Assert(document.ToString().Length < Uploader.CapSize);
             };
 
             Queue = new Queue<AzureDevOpsJobModel>();
@@ -82,6 +82,8 @@ public class JobIO
 
     private static Queue<AzureDevOpsJobModel> Queue = null;
     private static CosmosUpload<AzureDevOpsJobModel> Uploader = null;
+
+    private static object JobLock = new object();
 
     ////////////////////////////////////////////////////////////////////////////
     // Member functions
@@ -123,7 +125,7 @@ public class JobIO
         await Uploader.Finish();
         Uploader = null;
 
-        Debug.Assert(Uploader == null);
+        Trace.Assert(Uploader == null);
     }
 
     public async Task ReUploadData(FeedIterator<AzureDevOpsJobModel> iterator, bool force)
@@ -225,7 +227,7 @@ public class JobIO
                 return;
             }
 
-            Debug.Assert(step.Console != null);
+            Trace.Assert(step.Console != null);
 
             // Parse the console uri for the workitems
             var split = step.Console.Split("Waiting for completion of job ");
@@ -294,11 +296,8 @@ public class JobIO
 
     private void SubmitToUpload(AzureDevOpsJobModel model)
     {
-        try
-        {
-            Queue.Enqueue(model);
-        }
-        catch (Exception e)
+        Trace.Assert(model != null);
+        lock(JobLock)
         {
             Queue.Enqueue(model);
         }

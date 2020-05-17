@@ -89,7 +89,7 @@ public class Shared
 
     public static async Task<string> GetAsync(string uri, int retryCount = 60)
     {
-        Debug.Assert(Uri.IsWellFormedUriString(uri, UriKind.Absolute));
+        Trace.Assert(Uri.IsWellFormedUriString(uri, UriKind.Absolute));
 
         if (!Uri.IsWellFormedUriString(uri, UriKind.Absolute))
         {
@@ -132,7 +132,7 @@ public class Shared
                 else
                 {
                     Console.WriteLine($"Task Delay {timeoutAmount}");
-                    Debug.Assert(timeoutAmount < 4000);
+                    Trace.Assert(timeoutAmount < 4000);
                     await Task.Delay(timeoutAmount);
                     Console.WriteLine("Task resumed.");
                 }
@@ -148,35 +148,6 @@ public class Shared
         {
             var response = await client.GetAsync(location);
             return await response.Content.ReadAsStringAsync();
-        }
-    }
-
-    private static long HttpRequestCount = 0;
-
-    public static async Task HttpRequestAsync(string location, Func<string, Task<bool>> htmlResponse) 
-    {
-        CancellationToken cancelToken = default(CancellationToken);
-        using (HttpClient client = new HttpClient())
-        {
-            bool retry = false;
-            int retryCount = 5;
-            do
-            {
-                DateTime begin = DateTime.Now;
-                var response = await client.GetAsync(location, cancelToken);
-                var responseHtml = await response.Content.ReadAsStringAsync();
-                DateTime end = DateTime.Now;
-
-                double elapsedTime = (end - begin).TotalMilliseconds;
-                Console.WriteLine($"[HttpRequest: {++HttpRequestCount}]: Finished in {elapsedTime} milliseconds");
-
-                await Task.Run(async () => { retry = await htmlResponse(responseHtml); });
-            } while (retry && --retryCount > 0);
-
-            if (retry && retryCount < 0)
-            {
-                throw new Exception("Unable to download helix results.");
-            }
         }
     }
 }

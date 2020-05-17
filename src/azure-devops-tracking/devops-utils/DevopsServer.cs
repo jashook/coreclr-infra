@@ -465,7 +465,7 @@ namespace DevOps.Util
             RequestBuilder builder, 
             int? limit = null)
         {
-            Debug.Assert(string.IsNullOrEmpty(builder.ContinuationToken));
+            Trace.Assert(string.IsNullOrEmpty(builder.ContinuationToken));
             var count = 0;
             do
             {

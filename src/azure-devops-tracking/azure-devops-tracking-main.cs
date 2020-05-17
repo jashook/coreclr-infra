@@ -62,7 +62,7 @@ public class AzureDevOpsTrackingMain
 
             if (timespan.EndsWith('h'))
             {
-                Debug.Assert(timespan.StartsWith('-'));
+                Trace.Assert(timespan.StartsWith('-'));
 
                 string amount = timespan.Substring(1, timespan.Length -2);
                 int parsedAmount = int.Parse(amount);
@@ -71,7 +71,7 @@ public class AzureDevOpsTrackingMain
             }
             else if (timespan.EndsWith('d'))
             {
-                Debug.Assert(timespan.StartsWith('-'));
+                Trace.Assert(timespan.StartsWith('-'));
 
                 string amount = timespan.Substring(1, timespan.Length -2);
                 int parsedAmount = int.Parse(amount);
@@ -94,7 +94,7 @@ public class AzureDevOpsTrackingMain
 
             if (timespan.EndsWith('h'))
             {
-                Debug.Assert(timespan.StartsWith('-'));
+                Trace.Assert(timespan.StartsWith('-'));
 
                 string amount = timespan.Substring(1, timespan.Length -2);
                 int parsedAmount = int.Parse(amount);
@@ -103,7 +103,7 @@ public class AzureDevOpsTrackingMain
             }
             else if (timespan.EndsWith('d'))
             {
-                Debug.Assert(timespan.StartsWith('-'));
+                Trace.Assert(timespan.StartsWith('-'));
 
                 string amount = timespan.Substring(1, timespan.Length -2);
                 int parsedAmount = int.Parse(amount);

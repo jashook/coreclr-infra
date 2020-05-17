@@ -183,7 +183,7 @@ public class TreeQueue<T>
             }
         } while (requireWaitCallback);
 
-        Debug.Assert(DequeueQueueSize != 0);
+        Trace.Assert(DequeueQueueSize != 0);
 
         var returnValue = DequeueQueue[DequeueQueueSize - 1];
         --DequeueQueueSize;
