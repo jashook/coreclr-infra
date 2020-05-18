@@ -64,10 +64,10 @@ def bucket_results(client):
     helix_submission_link = "dbs/coreclr-infra/colls/helix-submissions"
 
     helix_submissions = list(client.ReadItems(helix_submission_link, {'maxItemCount':1000}))
-    #helix_workitems = list(client.ReadItems(helix_workitems_link, {'maxItemCount':1000}))
+    helix_workitems = list(client.ReadItems(helix_workitems_link, {'maxItemCount':1000}))
     
     print('Found {0} helix submissions'.format(len(helix_submissions)))
-    #print('Found {0} helix workitems'.format(len(helix_workitems)))
+    print('Found {0} helix workitems'.format(len(helix_workitems)))
 
     submissions_grouped_by_source = defaultdict(lambda: [])
     buckets = defaultdict(lambda: [])

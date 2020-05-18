@@ -167,7 +167,7 @@ public class HelixIO
     // Helper functions
     ////////////////////////////////////////////////////////////////////////////
 
-    private async Task DownloadSubmission(Tuple<string, AzureDevOpsStepModel, AzureDevOpsJobModel> jobTuple, List<HelixSubmissionModel> helixSubmissions, List<Tuple<HelixWorkItemDetail, HelixSubmissionModel, AzureDevOpsJobModel>> allWorkItems, object workItemLock, AzureDevOpsJobModel jobModel)
+    private async Task DownloadSubmission(Tuple<string, AzureDevOpsStepModel, AzureDevOpsJobModel> jobTuple, List<HelixSubmissionModel> helixSubmissions, List<Tuple<HelixWorkItemDetail, HelixSubmissionModel, AzureDevOpsJobModel>> allWorkItems, object workItemLock)
     {
         var job = jobTuple.Item1;
         string helixApiString = "https://helix.dot.net/api/2019-06-17/jobs/";
@@ -206,7 +206,8 @@ public class HelixIO
         model.Type = summary.Type;
         model.StepId = jobTuple.Item2.Id;
         model.JobId = jobTuple.Item3.Id;
-        model.PipelineId = jobTuple.Item3.PipelineId;
+        model.JobName = jobTuple.Item3.Name;
+        model.RuntimePipelineId = jobTuple.Item3.PipelineId;
 
         string workItemDetailResponse = null;
         try
@@ -479,6 +480,9 @@ public class HelixIO
                 }
                 workItemModel.Id = Guid.NewGuid().ToString();
 
+                workItemModel.HelixSubmissionId = model.Id;
+                workItemModel.StepId = model.StepId;
+
                 workItemModel.JobName = jobModel.Name;
 
                 SubmitToUpload(workItemModel);
@@ -493,6 +497,10 @@ public class HelixIO
                 modelToAdd.Name = workItemModel.Name;
                 modelToAdd.RunBegin = workItemModel.RunBegin;
                 modelToAdd.RunEnd = workItemModel.RunEnd;
+                modelToAdd.JobName = workItemModel.JobName;
+                modelToAdd.JobId = workItemModel.JobId;
+                modelToAdd.RuntimePipelineId = workItemModel.RuntimePipelineId;
+                modelToAdd.StepId = workItemModel.StepId;
                 
                 modelToAdd.HelixSubmissionId = model.Id;
             }
