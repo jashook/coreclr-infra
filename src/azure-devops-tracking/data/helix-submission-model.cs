@@ -57,6 +57,8 @@ public class HelixSubmissionModel : IDocument
     public string Id { get; set; }
     public string Console { get; set; }
     public double ElapsedTime { get; set; }
+    public string JobId { get; set; }
+    public string RuntimePipelineId { get; set; }
     public DateTime End { get; set; }
     public string JobName { get; set; }
     public string StepId { get; set; }

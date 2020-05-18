@@ -167,7 +167,7 @@ public class HelixIO
     // Helper functions
     ////////////////////////////////////////////////////////////////////////////
 
-    private async Task DownloadSubmission(Tuple<string, AzureDevOpsStepModel, AzureDevOpsJobModel> jobTuple, List<HelixSubmissionModel> helixSubmissions, List<Tuple<HelixWorkItemDetail, HelixSubmissionModel, AzureDevOpsJobModel>> allWorkItems, object workItemLock)
+    private async Task DownloadSubmission(Tuple<string, AzureDevOpsStepModel, AzureDevOpsJobModel> jobTuple, List<HelixSubmissionModel> helixSubmissions, List<Tuple<HelixWorkItemDetail, HelixSubmissionModel, AzureDevOpsJobModel>> allWorkItems, object workItemLock, AzureDevOpsJobModel jobModel)
     {
         var job = jobTuple.Item1;
         string helixApiString = "https://helix.dot.net/api/2019-06-17/jobs/";
@@ -205,6 +205,8 @@ public class HelixIO
         model.Source = summary.Source;
         model.Type = summary.Type;
         model.StepId = jobTuple.Item2.Id;
+        model.JobId = jobTuple.Item3.Id;
+        model.PipelineId = jobTuple.Item3.PipelineId;
 
         string workItemDetailResponse = null;
         try
