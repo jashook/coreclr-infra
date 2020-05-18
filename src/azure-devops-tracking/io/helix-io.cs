@@ -291,155 +291,210 @@ public class HelixIO
 
         if (logUri != null)
         {
-            Trace.Assert(logUri != null);
-
-            string helixRunnerLog = null;
-            bool continueDueToException = false;
             try
             {
-                helixRunnerLog = await Shared.GetAsync(logUri);
-            }
-            catch (Exception e)
-            {
-                continueDueToException = true;
-            }
+                Trace.Assert(logUri != null);
 
-            if (continueDueToException)
-            {
-                return;
-            }
-
-            string delim = "\t";
-            var zSplit = helixRunnerLog.Split('Z');
-            if (zSplit.Length == 1)
-            {
-                delim = ": ";
-            }
-            else
-            {
-                if (zSplit[1][0] != '\t')
+                string helixRunnerLog = null;
+                bool continueDueToException = false;
+                try
                 {
-                    Trace.Assert(!helixRunnerLog.Contains("_dump_file_upload"));
+                    helixRunnerLog = await Shared.GetAsync(logUri);
+                }
+                catch (Exception e)
+                {
+                    continueDueToException = true;
+                }
+
+                if (continueDueToException)
+                {
+                    return;
+                }
+
+                string delim = "\t";
+                var zSplit = helixRunnerLog.Split('Z');
+                if (zSplit.Length == 1)
+                {
                     delim = ": ";
                 }
-            }
-
-            string setupBeginStr = helixRunnerLog.Split(delim)[0];
-
-            if (helixRunnerLog.Contains("dockerhelper"))
-            {
-                string splitString = helixRunnerLog.Split("write_commands_to_file")[0];
-                var splitStringLines = splitString.Split('\n');
-
-                string setupEndStr = splitStringLines[splitStringLines.Length - 1].Split(delim)[0];
-
-                setupBeginStr = Regex.Replace(setupBeginStr, @"\s", "0");
-                setupEndStr = Regex.Replace(setupEndStr, @"\s", "0");
-
-                if (delim == ": ")
+                else
                 {
-                    setupBeginStr = Regex.Replace(setupBeginStr, @",", ".");
-                    setupEndStr = Regex.Replace(setupEndStr, @",", ".");
+                    if (zSplit[1][0] != '\t')
+                    {
+                        Trace.Assert(!helixRunnerLog.Contains("_dump_file_upload"));
+                        delim = ": ";
+                    }
+                }
 
-                    setupBeginStr += "Z";
-                    setupEndStr += "Z";
+                string setupBeginStr = helixRunnerLog.Split(delim)[0];
 
-                    setupBeginStr = Regex.Replace(setupBeginStr, @"\s+", "T");
-                    setupEndStr = Regex.Replace(setupEndStr, @"\s+", "T");
+                if (helixRunnerLog.Contains("dockerhelper"))
+                {
+                    string splitString = helixRunnerLog.Split("write_commands_to_file")[0];
+                    var splitStringLines = splitString.Split('\n');
+
+                    string setupEndStr = splitStringLines[splitStringLines.Length - 1].Split(delim)[0];
+
+                    setupBeginStr = Regex.Replace(setupBeginStr, @"\s", "0");
+                    setupEndStr = Regex.Replace(setupEndStr, @"\s", "0");
+
+                    if (delim == ": ")
+                    {
+                        setupBeginStr = Regex.Replace(setupBeginStr, @",", ".");
+                        setupEndStr = Regex.Replace(setupEndStr, @",", ".");
+
+                        setupBeginStr += "Z";
+                        setupEndStr += "Z";
+
+                        setupBeginStr = Regex.Replace(setupBeginStr, @"\s+", "T");
+                        setupEndStr = Regex.Replace(setupEndStr, @"\s+", "T");
+                    }
+                    else
+                    {
+                        setupBeginStr = Regex.Replace(setupBeginStr, @"\s", "0");
+                        setupEndStr = Regex.Replace(setupEndStr, @"\s", "0");
+                    }
+
+                    try
+                    {
+                        DateTime setupStartTime = DateTime.Parse(setupBeginStr);
+                        DateTime setupEndTime = DateTime.Parse(setupEndStr);
+                        
+                        workItemModel.HelixWorkItemSetupBegin = setupStartTime;
+                        workItemModel.HelixWorkItemSetupEnd = setupEndTime;
+                        
+                        workItemModel.RunBegin = setupEndTime;
+                    }
+                    catch (Exception e)
+                    {
+                        Trace.Assert(false);
+                    }
+
                 }
                 else
                 {
-                    setupBeginStr = Regex.Replace(setupBeginStr, @"\s", "0");
-                    setupEndStr = Regex.Replace(setupEndStr, @"\s", "0");
+                    string splitString = helixRunnerLog.Split("_execute_command")[0];
+                    var splitStringLines = splitString.Split("\n");
+
+                    string setupEndStr = splitStringLines[splitStringLines.Length - 1].Split(delim)[0];
+
+                    if (delim == ": ")
+                    {
+                        setupBeginStr = Regex.Replace(setupBeginStr, @",", ".");
+                        setupEndStr = Regex.Replace(setupEndStr, @",", ".");
+
+                        setupBeginStr += "Z";
+                        setupEndStr += "Z";
+
+                        setupBeginStr = Regex.Replace(setupBeginStr, @"\s+", "T");
+                        setupEndStr = Regex.Replace(setupEndStr, @"\s+", "T");
+                    }
+                    else
+                    {
+                        setupBeginStr = Regex.Replace(setupBeginStr, @"\s", "0");
+                        setupEndStr = Regex.Replace(setupEndStr, @"\s", "0");
+                    }
+
+                    try
+                    {
+                        DateTime setupStartTime = DateTime.Parse(setupBeginStr);
+                        DateTime setupEndTime = DateTime.Parse(setupEndStr);
+
+                        workItemModel.HelixWorkItemSetupBegin = setupStartTime;
+                        workItemModel.HelixWorkItemSetupEnd = setupEndTime;
+
+                        workItemModel.RunBegin = setupEndTime;
+                    }
+                    catch (Exception e)
+                    {
+                        Trace.Assert(false);
+                    }
                 }
 
-                try
-                {
-                    DateTime setupStartTime = DateTime.Parse(setupBeginStr);
-                    DateTime setupEndTime = DateTime.Parse(setupEndStr);
-                    
-                    workItemModel.HelixWorkItemSetupBegin = setupStartTime;
-                    workItemModel.HelixWorkItemSetupEnd = setupEndTime;
-                    
-                    workItemModel.RunBegin = setupEndTime;
-                }
-                catch (Exception e)
-                {
-                    Trace.Assert(false);
-                }
+                string endDelim = delim == ": " ? "_execute_command: Finished" : "_dump_file_upload";
+                string runtimeSplitStr = helixRunnerLog.Split(endDelim)[0];
+                var runtimeSplitStrLines = runtimeSplitStr.Split('\n');
 
-            }
-            else
-            {
-                string splitString = helixRunnerLog.Split("_execute_command")[0];
-                var splitStringLines = splitString.Split("\n");
-
-                string setupEndStr = splitStringLines[splitStringLines.Length - 1].Split(delim)[0];
+                string runtimeEndStr = runtimeSplitStrLines[runtimeSplitStrLines.Length - 1].Split(delim)[0];
 
                 if (delim == ": ")
                 {
-                    setupBeginStr = Regex.Replace(setupBeginStr, @",", ".");
-                    setupEndStr = Regex.Replace(setupEndStr, @",", ".");
+                    runtimeEndStr = Regex.Replace(runtimeEndStr, @",", ".");
 
-                    setupBeginStr += "Z";
-                    setupEndStr += "Z";
+                    runtimeEndStr += "Z";
 
-                    setupBeginStr = Regex.Replace(setupBeginStr, @"\s+", "T");
-                    setupEndStr = Regex.Replace(setupEndStr, @"\s+", "T");
+                    runtimeEndStr = Regex.Replace(runtimeEndStr, @"\s+", "T");
                 }
                 else
                 {
-                    setupBeginStr = Regex.Replace(setupBeginStr, @"\s", "0");
-                    setupEndStr = Regex.Replace(setupEndStr, @"\s", "0");
+                    runtimeEndStr = Regex.Replace(runtimeEndStr, @"\s", "0");
                 }
 
-                try
+                DateTime runtimeEndTime = DateTime.Parse(runtimeEndStr);
+
+                workItemModel.RunEnd = runtimeEndTime;
+
+                workItemModel.ElapsedSetupTime = (workItemModel.HelixWorkItemSetupEnd - workItemModel.HelixWorkItemSetupBegin).TotalMilliseconds;
+                workItemModel.ElapsedRunTime = (workItemModel.RunEnd - workItemModel.RunBegin).TotalMilliseconds;
+
+                Debug.Assert(workItemModel.ElapsedRunTime > 0);
+                Debug.Assert(workItemModel.ElapsedSetupTime > 0);
+
+                if (workItemModel.ElapsedRunTime < 0 || workItemModel.ElapsedSetupTime < 0)
                 {
-                    DateTime setupStartTime = DateTime.Parse(setupBeginStr);
-                    DateTime setupEndTime = DateTime.Parse(setupEndStr);
+                    string path = @"strange_uris.txt";
+                    if (!File.Exists(path))
+                    {
+                        // Create a file to write to.
+                        using (StreamWriter sw = File.CreateText(path))
+                        {
+                            sw.WriteLine($"{logUri}");
+                        }
+                    }
+                    else
+                    {
+                        using (StreamWriter sw = File.AppendText(path))
+                        {
+                            sw.WriteLine($"{logUri}");
+                        }
+                    }
 
-                    workItemModel.HelixWorkItemSetupBegin = setupStartTime;
-                    workItemModel.HelixWorkItemSetupEnd = setupEndTime;
-
-                    workItemModel.RunBegin = setupEndTime;
+                    return;
                 }
-                catch (Exception e)
+
+                if (workItemModel.ExitCode != 0)
                 {
-                    Trace.Assert(false);
+                    workItemModel.Console = null;
+                    
+                    try
+                    {
+                        workItemModel.Console = await Shared.GetAsync(workItem.ConsoleOutputUri);
+                    }
+                    catch(Exception e)
+                    {
+                        // do nothing.
+                    }
                 }
+                workItemModel.Id = Guid.NewGuid().ToString();
+
+                workItemModel.JobName = jobModel.Name;
+
+                SubmitToUpload(workItemModel);
+                uploadedItems.Add(workItemModel);
+
+                modelToAdd.Id = workItemModel.Id;
+                modelToAdd.ElapsedRunTime = workItemModel.ElapsedRunTime;
+                modelToAdd.ElapsedSetupTime = workItemModel.ElapsedSetupTime;
+                modelToAdd.HelixWorkItemSetupBegin = workItemModel.HelixWorkItemSetupBegin;
+                modelToAdd.HelixWorkItemSetupEnd = workItemModel.HelixWorkItemSetupEnd;
+                modelToAdd.MachineName = workItemModel.MachineName;
+                modelToAdd.Name = workItemModel.Name;
+                modelToAdd.RunBegin = workItemModel.RunBegin;
+                modelToAdd.RunEnd = workItemModel.RunEnd;
+                
+                modelToAdd.HelixSubmissionId = model.Id;
             }
-
-            string endDelim = delim == ": " ? "_execute_command: Finished" : "_dump_file_upload";
-            string runtimeSplitStr = helixRunnerLog.Split(endDelim)[0];
-            var runtimeSplitStrLines = runtimeSplitStr.Split('\n');
-
-            string runtimeEndStr = runtimeSplitStrLines[runtimeSplitStrLines.Length - 1].Split(delim)[0];
-
-            if (delim == ": ")
-            {
-                runtimeEndStr = Regex.Replace(runtimeEndStr, @",", ".");
-
-                runtimeEndStr += "Z";
-
-                runtimeEndStr = Regex.Replace(runtimeEndStr, @"\s+", "T");
-            }
-            else
-            {
-                runtimeEndStr = Regex.Replace(runtimeEndStr, @"\s", "0");
-            }
-            
-
-            DateTime runtimeEndTime = DateTime.Parse(runtimeEndStr);
-
-            workItemModel.RunEnd = runtimeEndTime;
-
-            workItemModel.ElapsedSetupTime = (workItemModel.HelixWorkItemSetupEnd - workItemModel.HelixWorkItemSetupBegin).TotalMilliseconds;
-            workItemModel.ElapsedRunTime = (workItemModel.RunEnd - workItemModel.RunBegin).TotalMilliseconds;
-
-            Debug.Assert(workItemModel.ElapsedRunTime > 0);
-            Debug.Assert(workItemModel.ElapsedSetupTime > 0);
-
-            if (workItemModel.ElapsedRunTime < 0 || workItemModel.ElapsedSetupTime < 0)
+            catch(Exception e)
             {
                 string path = @"strange_uris.txt";
                 if (!File.Exists(path))
@@ -460,38 +515,6 @@ public class HelixIO
 
                 return;
             }
-
-            if (workItemModel.ExitCode != 0)
-            {
-                workItemModel.Console = null;
-                
-                try
-                {
-                    workItemModel.Console = await Shared.GetAsync(workItem.ConsoleOutputUri);
-                }
-                catch(Exception e)
-                {
-                    // do nothing.
-                }
-            }
-            workItemModel.Id = Guid.NewGuid().ToString();
-
-            workItemModel.JobName = jobModel.Name;
-
-            SubmitToUpload(workItemModel);
-            uploadedItems.Add(workItemModel);
-
-            modelToAdd.Id = workItemModel.Id;
-            modelToAdd.ElapsedRunTime = workItemModel.ElapsedRunTime;
-            modelToAdd.ElapsedSetupTime = workItemModel.ElapsedSetupTime;
-            modelToAdd.HelixWorkItemSetupBegin = workItemModel.HelixWorkItemSetupBegin;
-            modelToAdd.HelixWorkItemSetupEnd = workItemModel.HelixWorkItemSetupEnd;
-            modelToAdd.MachineName = workItemModel.MachineName;
-            modelToAdd.Name = workItemModel.Name;
-            modelToAdd.RunBegin = workItemModel.RunBegin;
-            modelToAdd.RunEnd = workItemModel.RunEnd;
-            
-            modelToAdd.HelixSubmissionId = model.Id;
         }
 
         DateTime endHelixWorkItem = DateTime.Now;

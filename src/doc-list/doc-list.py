@@ -58,6 +58,25 @@ def read_helix_workitems_for_pipeline(client, pipeline_id=None):
     print()
 
 
+def bucket_results(client):
+    print('\n1.3 - Reading all documents in a collection\n')
+    helix_workitems_link = "dbs/coreclr-infra/colls/helix-workitems"
+    helix_submission_link = "dbs/coreclr-infra/colls/helix-submissions"
+
+    helix_submissions = list(client.ReadItems(helix_submission_link, {'maxItemCount':1000}))
+    #helix_workitems = list(client.ReadItems(helix_workitems_link, {'maxItemCount':1000}))
+    
+    print('Found {0} helix submissions'.format(len(helix_submissions)))
+    #print('Found {0} helix workitems'.format(len(helix_workitems)))
+
+    submissions_grouped_by_source = defaultdict(lambda: [])
+    buckets = defaultdict(lambda: [])
+
+    for submission in helix_submissions:
+        submissions_grouped_by_source[submission["Source"]].append(submission)
+
+    print("Found {} sources.".format(len(submissions_grouped_by_source.keys())))
+
 def read_documents(client):
     print('\n1.3 - Reading all documents in a collection\n')
     collection_link = "dbs/coreclr-infra/colls/helix-workitems"
@@ -102,7 +121,7 @@ def read_documents(client):
 def main():
     with IDisposable(cosmos_client.CosmosClient("https://coreclr-infra.documents.azure.com:443/", {'masterKey': os.environ["coreclrInfraKey"]} )) as client:
         try:
-            read_documents(client)
+            bucket_results(client)
 
         except errors.HTTPFailure as e:
             print('\nrun_sample has caught an error. {0}'.format(e))
