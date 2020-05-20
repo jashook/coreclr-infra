@@ -33,6 +33,7 @@ public class JobIO
     {   
         HelixContainer = db.GetContainer("helix-workitems");
         SubmissionContainer = db.GetContainer("helix-submissions");
+        XUnitTestContainer = db.GetContainer("xunit-tests");
 
         HelixSubmissions = new List<Tuple<string, AzureDevOpsStepModel, AzureDevOpsJobModel>>();
         DownloadedJobs = 0;
@@ -76,6 +77,7 @@ public class JobIO
     private List<Tuple<string, AzureDevOpsStepModel, AzureDevOpsJobModel>> HelixSubmissions;
     private Container HelixContainer { get; set; }
     private Container SubmissionContainer { get; set; }
+    private Container XUnitTestContainer { get; set; }
     public long DownloadedJobs { get; set; }
     public bool CreatedHelixJobs { get; set; }
     public List<string> Jobs { get; set; }
@@ -281,7 +283,7 @@ public class JobIO
     public async Task UploadHelixWorkItems()
     {
         DateTime helixBeginTime = DateTime.Now;
-        HelixIO io = new HelixIO(HelixContainer, SubmissionContainer);
+        HelixIO io = new HelixIO(HelixContainer, SubmissionContainer, XUnitTestContainer);
 
         Console.WriteLine($"Downloading {HelixSubmissions.Count} helix submissions.");
 

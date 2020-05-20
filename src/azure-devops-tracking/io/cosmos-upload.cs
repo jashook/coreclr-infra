@@ -83,6 +83,7 @@ public class CosmosUpload<T> where T : IDocument
     private string PrefixMessage { get; set; }
 
     public long CapSize { get; set; }
+    public int DocCap = 90;
     private long DocumentSize = 0;
     private int SuccessfulDocumentCount = 0;
     private int FailedDocumentCount = 0;
@@ -108,7 +109,7 @@ public class CosmosUpload<T> where T : IDocument
             docToInsertSize = document.ToString().Length;
         }
 
-        if (DocumentSize + docToInsertSize >= CapSize || Documents.Count > 90)
+        if (DocumentSize + docToInsertSize >= CapSize || Documents.Count > DocCap)
         {
             Trace.Assert(DocumentSize < CapSize);
             await DrainCosmosOperations();
@@ -126,6 +127,8 @@ public class CosmosUpload<T> where T : IDocument
             cosmosOperations.Add(HelixContainer.CreateItemAsync<T>(document, new PartitionKey(GetPartitionKey(document))).CaptureOperationResponse(document));
         }
 
+        Console.WriteLine($"{UploadQueue.Count}] -- Remaining.");
+ 
         bool encounteredError = false;
 
         do
@@ -191,7 +194,7 @@ public class CosmosUpload<T> where T : IDocument
                 continue;
             }
 
-            await AddOperation(model);
+           await AddOperation(model);
         }
 
         await DrainCosmosOperations();

@@ -21,6 +21,25 @@ namespace models {
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+
+public class Test : IDocument
+{
+    [JsonProperty(PropertyName = "id")]
+    public string Id { get; set; }
+    public string HelixWorkItemId { get; set; }
+    public string Console { get; set; }
+    public double ElapsedTime { get; set; }
+    public string Name { get; set; }
+    public bool Passed { get; set; }
+    public override string ToString()
+    {
+        return JsonConvert.SerializeObject(this);
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
 public class HelixWorkItemModel : IDocument
 {
     [JsonProperty(PropertyName = "id")]
@@ -36,6 +55,10 @@ public class HelixWorkItemModel : IDocument
     public string JobName { get; set; }
     public DateTime HelixWorkItemSetupBegin { get; set; }
     public DateTime HelixWorkItemSetupEnd { get; set; }
+
+    public int PassedTests { get; set; }
+    public int FailedTests { get; set; }
+    public int TotalRunTests { get; set; }
 
     public string MachineName { get; set; }
 

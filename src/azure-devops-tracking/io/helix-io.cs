@@ -13,6 +13,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Xml;
+using System.Xml.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -40,16 +42,19 @@ public class HelixIO
     // Constructor
     ////////////////////////////////////////////////////////////////////////////
 
-    public HelixIO(Container helixContainer, Container helixSubmissionContainer)
+    public HelixIO(Container helixContainer, Container helixSubmissionContainer, Container XUnitTestContainer)
     {
         if (Uploader == null)
         {
             Action<HelixWorkItemModel> trimDoc = (HelixWorkItemModel document) => {
                 long roughMaxSize = 1800000; // 1,800,000 bytes (1.8mb)
 
-                if (document.Console.Length > roughMaxSize)
+                if (document.Console != null)
                 {
-                    document.Console = document.Console.Substring(0, (int)roughMaxSize);
+                    if (document.Console.Length > roughMaxSize)
+                    {
+                        document.Console = document.Console.Substring(0, (int)roughMaxSize);
+                    }
                 }
 
                 Trace.Assert(document.ToString().Length < 2000000);
@@ -59,11 +64,32 @@ public class HelixIO
                 Trace.Assert(document.ToString().Length < 2000000);
             };
 
+            Action<Test> trimTestDoc = (Test document) => {
+                long roughMaxSize = 1800000; // 1,800,000 bytes (1.8mb)
+
+                if (document.Console != null)
+                {
+                    if (document.Console.Length > roughMaxSize)
+                    {
+                        document.Console = document.Console.Substring(0, (int)roughMaxSize);
+                    }
+                }
+
+                Trace.Assert(document.ToString().Length < 2000000);
+            };
+
             Queue = new Queue<HelixWorkItemModel>();
             Uploader = new CosmosUpload<HelixWorkItemModel>("[Helix Work Item Model Upload]", helixContainer, Queue, (HelixWorkItemModel document) => { return document.Name; }, trimDoc);
 
+            Uploader.DocCap = 100;
+
             SubmissionQueue = new Queue<HelixSubmissionModel>();
             SubmissionUploader = new CosmosUpload<HelixSubmissionModel>("[Helix Submision Model Upload]", helixSubmissionContainer, SubmissionQueue, (HelixSubmissionModel document) => { return document.Name; }, trimSubmissionDoc);
+
+            TestQueue = new Queue<Test>();
+            TestUploader = new CosmosUpload<Test>("[XUnitTest Upload]", XUnitTestContainer, TestQueue, (Test document) => { return document.Name; }, trimTestDoc);
+
+            TestUploader.DocCap = 300;
         }
     }
 
@@ -75,6 +101,8 @@ public class HelixIO
     private static CosmosUpload<HelixWorkItemModel> Uploader = null;
     private static Queue<HelixSubmissionModel> SubmissionQueue = null;
     private static CosmosUpload<HelixSubmissionModel> SubmissionUploader = null;
+    private static Queue<Test> TestQueue = null;
+    private static CosmosUpload<Test> TestUploader = null;
 
     private static object HelixLock = new object();
 
@@ -121,9 +149,11 @@ public class HelixIO
             Trace.Assert(item != null);
         }
 
+        DateTime helixWorkitemDownloadStartTime = DateTime.Now;
+
         int currentItem = 1;
         int totalItems = allWorkItems.Count;
-        int limit = 150;
+        int limit = 100;
         DateTime limitStart = DateTime.Now;
         foreach (var item in allWorkItems)
         {
@@ -146,7 +176,6 @@ public class HelixIO
             tasks.Add(UploadHelixWorkItemTry(downloadedItems, uploadedItems, item.Item1, item.Item2, item.Item3));
         }
 
-        DateTime helixWorkitemDownloadStartTime = DateTime.Now;
         Console.WriteLine("Starting download helix work items.");
         await Task.WhenAll(tasks);
 
@@ -155,6 +184,17 @@ public class HelixIO
 
         Console.WriteLine($"Downloaded {downloadedItems.Count} helix work items in {elapsedHelixWorkItemDownloadtime}m");
         Console.WriteLine($"To upload {uploadedItems.Count}");
+
+        long testCount = TestQueue.Count;
+
+        DateTime testBegin = DateTime.Now;
+        // Upload tests.
+        await TestUploader.Finish();
+        DateTime testEnd = DateTime.Now;
+
+        var elapsedTestUploadTime = (testEnd - testBegin).TotalMinutes;
+
+        Console.WriteLine($"Uploaded {testCount} in {elapsedTestUploadTime}m");
 
         // Upload submissions.
         await SubmissionUploader.Finish();
@@ -282,6 +322,8 @@ public class HelixIO
         workItemModel.JobId = jobModel.JobGuid;
         workItemModel.RuntimePipelineId = jobModel.PipelineId;
 
+        workItemModel.Id = Guid.NewGuid().ToString();
+
         string logUri = null;
         foreach (var log in workItem.Logs)
         {
@@ -290,6 +332,93 @@ public class HelixIO
                 logUri = log["Uri"];
                 break;
             }
+        }
+
+        string testXmlUri = null;
+        foreach (var file in workItem.Files)
+        {
+            if (file["FileName"].Contains(".xml"))
+            {
+                testXmlUri = file["Uri"];
+                break;
+            }
+        }
+
+        if (testXmlUri != null)
+        {
+            string xmlContents = null;
+            try
+            {
+                xmlContents = await Shared.GetAsync(testXmlUri);
+            }
+            catch (Exception e)
+            {
+                return;
+            }
+
+            XmlDocument doc = new XmlDocument();
+            doc.LoadXml(xmlContents);
+
+            int totalRunTests = 0;
+            int passedTests = 0;
+            int failedTests = 0;
+            XmlNodeList collections = doc.GetElementsByTagName("collection");
+
+            foreach (XmlNode collection in collections)
+            {
+                int amountOfFailedTests = 0;
+                
+                var passedStr = collection.Attributes["passed"].Value;
+                var failedStr = collection.Attributes["failed"].Value;
+
+                passedTests += int.Parse(passedStr);
+                amountOfFailedTests = int.Parse(failedStr);
+
+                failedTests += amountOfFailedTests;
+
+            //     foreach (XmlNode test in collection.SelectNodes("test"))
+            //     {
+            //         string console = null;
+            //         if (test.ChildNodes.Count > 0)
+            //         {
+            //             console = test.ChildNodes[0].InnerText;
+            //         }
+
+            //         string testName = test.Attributes["name"].Value;
+            //         bool passed = test.Attributes["result"].Value == "Pass" ? true : false;
+            //         double timeRun = Double.Parse(test.Attributes["time"].Value);
+                    
+            //         Test testModel = new Test();
+
+            //         if (passed)
+            //         {
+            //             testModel.Console = null;
+            //         }
+            //         else
+            //         {
+            //             testModel.Console = console;
+            //         }
+
+            //         testModel.ElapsedTime = timeRun;
+            //         testModel.Name = testName;
+            //         testModel.Passed = passed;
+
+            //         testModel.Id = Guid.NewGuid().ToString();
+            //         testModel.HelixWorkItemId = workItemModel.Id;
+
+            //         SubmitTestToUpload(testModel);
+            //     }
+            }
+
+            totalRunTests = passedTests + failedTests;
+
+            workItemModel.TotalRunTests = totalRunTests;
+            workItemModel.PassedTests = passedTests;
+            workItemModel.FailedTests = failedTests;
+
+            modelToAdd.TotalRunTests = workItemModel.TotalRunTests;
+            modelToAdd.PassedTests = workItemModel.PassedTests;
+            modelToAdd.FailedTests = workItemModel.FailedTests;
         }
 
         if (logUri != null)
@@ -478,7 +607,6 @@ public class HelixIO
                         // do nothing.
                     }
                 }
-                workItemModel.Id = Guid.NewGuid().ToString();
 
                 workItemModel.HelixSubmissionId = model.Id;
                 workItemModel.StepId = model.StepId;
@@ -548,7 +676,37 @@ public class HelixIO
         Trace.Assert(model != null);
         lock(HelixLock)
         {
+            long roughMaxSize = 1800000; // 1,800,000 bytes (1.8mb)
+
+            if (model.Console != null)
+            {
+                if (model.Console.Length > roughMaxSize)
+                {
+                    model.Console = model.Console.Substring(0, (int)roughMaxSize);
+                }
+            }
+
+            Trace.Assert(model.ToString().Length < 2000000);
             Queue.Enqueue(model);
+        }
+    }
+
+    private void SubmitTestToUpload(Test model)
+    {
+        lock(HelixLock)
+        {
+            long roughMaxSize = 1800000; // 1,800,000 bytes (1.8mb)
+
+            if (model.Console != null)
+            {
+                if (model.Console.Length > roughMaxSize)
+                {
+                    model.Console = model.Console.Substring(0, (int)roughMaxSize);
+                }
+            }
+
+            Trace.Assert(model.ToString().Length < 2000000);
+            TestQueue.Enqueue(model);
         }
     }
 

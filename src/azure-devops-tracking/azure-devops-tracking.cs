@@ -119,12 +119,14 @@ public class AzureDevopsTracking
     private Container JobContainer;
     private Container HelixContainer;
     private Container HelixSubmissionContainer;
+    private Container XUnitTestContainer;
 
     private static readonly string DatabaseName = "coreclr-infra";
     private static readonly string RuntimeContainerName = "runtime-pipelines";
     private static readonly string JobContainerName = "runtime-jobs";
     private static readonly string HelixContainerName = "helix-workitems";
     private static readonly string HelixSubmissionContainerName = "helix-submissions";
+    private static readonly string XUnitTestContainerName = "xunit-tests";
 
     private static int conflicts = 0;
 
@@ -394,7 +396,7 @@ public class AzureDevopsTracking
 
     public async Task Update()
     {
-        int limit = 50;
+        int limit = 1;
 
         var lastRun = await GetLastRunFromDb();
 
@@ -849,17 +851,28 @@ public class AzureDevopsTracking
             {
 
             }
+
+            try
+            {
+                await Db.GetContainer(XUnitTestContainerName).DeleteContainerAsync();
+            }
+            catch (Exception e)
+            {
+
+            }
         }
 
         ContainerProperties runtimeContainerProperties = new ContainerProperties(RuntimeContainerName, partitionKeyPath: "/BuildReasonString");
         ContainerProperties jobContainerProperties = new ContainerProperties(JobContainerName, partitionKeyPath: "/Name");
         ContainerProperties helixContainerProperties = new ContainerProperties(HelixContainerName, partitionKeyPath: "/Name");
         ContainerProperties helixSubmissionContainerProperties = new ContainerProperties(HelixSubmissionContainerName, partitionKeyPath: "/Name");
+        ContainerProperties xunitContainerProperties = new ContainerProperties(XUnitTestContainerName, partitionKeyPath: "/Name");
 
         this.RuntimeContainer = await Db.CreateContainerIfNotExistsAsync(runtimeContainerProperties, throughput: 1000);
         this.JobContainer = await Db.CreateContainerIfNotExistsAsync(jobContainerProperties, throughput: 3000);
         this.HelixContainer = await Db.CreateContainerIfNotExistsAsync(helixContainerProperties, throughput: 1500);
         this.HelixSubmissionContainer = await Db.CreateContainerIfNotExistsAsync(helixSubmissionContainerProperties, throughput: 500);
+        this.XUnitTestContainer = await Db.CreateContainerIfNotExistsAsync(xunitContainerProperties, throughput: 1500);
     }
 
 }
