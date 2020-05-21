@@ -396,7 +396,7 @@ public class AzureDevopsTracking
 
     public async Task Update()
     {
-        int limit = 1;
+        int limit = 5;
 
         var lastRun = await GetLastRunFromDb();
 
@@ -866,13 +866,13 @@ public class AzureDevopsTracking
         ContainerProperties jobContainerProperties = new ContainerProperties(JobContainerName, partitionKeyPath: "/Name");
         ContainerProperties helixContainerProperties = new ContainerProperties(HelixContainerName, partitionKeyPath: "/Name");
         ContainerProperties helixSubmissionContainerProperties = new ContainerProperties(HelixSubmissionContainerName, partitionKeyPath: "/Name");
-        ContainerProperties xunitContainerProperties = new ContainerProperties(XUnitTestContainerName, partitionKeyPath: "/Name");
+        //ContainerProperties xunitContainerProperties = new ContainerProperties(XUnitTestContainerName, partitionKeyPath: "/Name");
 
         this.RuntimeContainer = await Db.CreateContainerIfNotExistsAsync(runtimeContainerProperties, throughput: 1000);
         this.JobContainer = await Db.CreateContainerIfNotExistsAsync(jobContainerProperties, throughput: 3000);
         this.HelixContainer = await Db.CreateContainerIfNotExistsAsync(helixContainerProperties, throughput: 1500);
-        this.HelixSubmissionContainer = await Db.CreateContainerIfNotExistsAsync(helixSubmissionContainerProperties, throughput: 500);
-        this.XUnitTestContainer = await Db.CreateContainerIfNotExistsAsync(xunitContainerProperties, throughput: 1500);
+        this.HelixSubmissionContainer = await Db.CreateContainerIfNotExistsAsync(helixSubmissionContainerProperties, throughput: 1000);
+        //this.XUnitTestContainer = await Db.CreateContainerIfNotExistsAsync(xunitContainerProperties, throughput: 1500);
     }
 
 }
