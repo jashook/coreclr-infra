@@ -8,8 +8,9 @@ import azure.cosmos.documents as documents
 import azure.cosmos.cosmos_client as cosmos_client
 import azure.cosmos.errors as errors
 import datetime
-import os
 import math
+import pickle
+import os
 
 from collections import defaultdict
 
@@ -56,22 +57,21 @@ def read_helix_workitems_for_pipeline(client, pipeline_id=None):
 
 
 def bucket_results(client):
-    print('\n1.3 - Reading all documents in a collection\n')
     helix_workitems_link = "dbs/coreclr-infra/colls/helix-workitems"
     helix_submission_link = "dbs/coreclr-infra/colls/helix-submissions"
 
     pipeline_link = "dbs/coreclr-infra/colls/runtime-pipelines"
     jobs_link = "dbs/coreclr-infra/colls/runtime-jobs"
 
-    # Get only jobs from 8 may to 11 may
-    c = list(client.QueryItems(jobs_link,
-                                       {
-                                            'query': 'SELECT * FROM root job WHERE job.DateStart>@min_start',
-                                            'parameters': [
-                                                {'name': '@min_start', 'value': "2020-05-08T02:30:52.635-07:00"}
-                                            ]
-                                       },
-                                       {'enableCrossPartitionQuery': True}))
+    # Get only jobs from 8 may
+    jobs = list(client.QueryItems(jobs_link,
+                                    {
+                                        'query': 'SELECT * FROM root job WHERE job.DateStart>@min_start',
+                                        'parameters': [
+                                            {'name': '@min_start', 'value': "2020-05-08T02:30:52.635-07:00"}
+                                        ]
+                                    },
+                                    {'enableCrossPartitionQuery': True}))
 
     pipeline_runs = list(client.ReadItems(pipeline_link, {'maxItemCount':1000}))
     #jobs = list(client.ReadItems(jobs_link, {'maxItemCount':1000}))
@@ -182,11 +182,135 @@ def get_last_runtime_pipeline(client):
     for key in last_pipeline:
         print("[{}]: {}".format(key, last_pipeline[key]))
     
+def bucket_from_disk():
+    data_location = os.path.join("/Users/jashoo/data/")
+
+    jobs = pickle.load(open(os.path.join(data_location, "jobs.txt"), "rb" ))
+    pipeline_runs = pickle.load(open(os.path.join(data_location, "pipelines.txt"), "rb" ))
+    helix_submissions = pickle.load(open(os.path.join(data_location, "helix_submissions.txt"), "rb" ))
+    helix_workitems = pickle.load(open(os.path.join(data_location, "helix-workitems.txt"), "rb" ))
+    
+    print('Found {0} helix submissions'.format(len(helix_submissions)))
+    print('Found {0} helix workitems'.format(len(helix_workitems)))
+
+    pipeline_id_to_run = defaultdict(lambda: None)
+    for pipeline in pipeline_runs:
+        assert pipeline["id"] not in pipeline_id_to_run
+        pipeline_id_to_run[pipeline["id"]] = pipeline
+
+    submission_by_pr_number = defaultdict(lambda: [])
+    submissions_grouped_by_source = defaultdict(lambda: [])
+    buckets = defaultdict(lambda: [])
+
+    for submission in helix_submissions:
+        submissions_grouped_by_source[submission["Source"]].append(submission)
+
+        if "pull" in submission["Source"]:
+            pr_number = submission["Source"].split("pull/")[1].split("/merge")[0]
+            submission_by_pr_number[pr_number] = submission
+
+    ci_work_items = submissions_grouped_by_source["ci/public/dotnet/runtime/refs/heads/master"]
+    helix_queues_used = defaultdict(lambda: [])
+
+    for item in ci_work_items:
+        for queue in item["Queues"]:
+            helix_queues_used[queue].append(item)
+
+    jobs_categorized = defaultdict(lambda: defaultdict(lambda: None))
+    for job in jobs:
+        assert jobs_categorized[job["JobGuid"]][job["PipelineId"]] == None
+        jobs_categorized[job["JobGuid"]][job["PipelineId"]] = job
+
+    workitems_for_job = defaultdict(lambda: [])
+    job_for_pipeline = defaultdict(lambda: [])
+
+    job_id_to_job = defaultdict(lambda: None)
+    for job in jobs:
+        assert job["id"] not in job_id_to_job
+        job_id_to_job[job["id"]] = job
+
+    not_found_list = []
+
+    workitem_map = defaultdict(lambda: None)
+    for workitem in helix_workitems:
+        possible_jobs = jobs_categorized[workitem["JobId"]]
+
+        found = False
+        job = jobs_categorized[workitem["JobId"]][workitem["RuntimePipelineId"]]
+
+        if job != None:
+            found = True
+            assert workitem["id"] not in workitem_map
+            assert workitem["RuntimePipelineId"] in pipeline_id_to_run
+            workitem_map[workitem["id"]] = (workitem, job, pipeline_id_to_run[workitem["RuntimePipelineId"]])
+
+            workitems_for_job[job["id"]].append(workitem)
+
+        if not found:
+            not_found_list.append(workitem)
+
+    for job_id in workitems_for_job:
+        job = job_id_to_job[job_id]
+        job_for_pipeline[job["PipelineId"]].append(job)
+
+    sorted_pipelines = [item for item in job_for_pipeline]
+    sorted_pipelines.sort()
+
+    with open("data.md", "w") as file_handle:
+        file_handle.write("# dotnet/runtime data" + os.linesep)
+
+        start_date = datetime.datetime.strptime(pipeline_id_to_run[sorted_pipelines[0]]["DateStart"], "%Y-%m-%dT%H:%M:%f")
+        end_date = datetime.datetime.strptime(pipeline_id_to_run[sorted_pipelines[-1]]["DateStart"], "%Y-%m-%dT%H:%M:%f")
+
+        file_handle.write(os.linesep)
+        file_handle.write("### Spans {}/{}/{} to {}/{}/{}".format(start_date.month, start_date.day, start_date.year, end_date.month, end_date.day, end_date.year) + os.linesep)
+        
+        file_handle.write(os.linesep)
+
+        file_handle.write("## All pipelines (Sorted by date)." + os.linesep)
+        file_handle.write(os.linesep)
+
+        rows = ["Pipeline ID", "WorkItem Count", "Total Setup Time (seconds)", "Total Run Time (seconds)"]
+        format_str = "|{}" * len(rows) + "|"
+        hyphen_str = "|--------" * len(rows) + "|"
+        file_handle.write(format_str.format(*rows) + os.linesep)
+        file_handle.write(hyphen_str)
+
+        # Time spent in setup by pipeline
+        for pipeline in sorted_pipelines:
+            total_setup_time = 0
+            total_run_time = 0
+
+            workitem_count = 0
+
+            pipeline_object = pipeline_id_to_run[pipeline]
+            helix_submission_jobs = job_for_pipeline[pipeline]
+
+            # These are only jobs with helix submissions
+            for job in helix_submission_jobs:
+                workitems_in_job = workitems_for_job[job["id"]]
+
+                workitem_count += len(workitems_in_job)
+
+                for workitem in workitems_in_job:
+                    total_setup_time += workitem["ElapsedSetupTime"]
+                    total_run_time += workitem["ElapsedRunTime"]
+
+            total_setup_time_seconds = total_setup_time / 1000
+            total_run_time_seconds = total_run_time / 1000
+
+            file_handle.write(os.linesep)
+
+            if "BuildUri" in pipeline_object:
+                pipeline = "[{}]({})".format(pipeline, pipeline_object["BuildUri"])
+
+            file_handle.write(format_str.format(pipeline, workitem_count, total_setup_time_seconds, total_run_time_seconds))
+
 def main():
     with CosmosDBGuard(cosmos_client.CosmosClient("https://coreclr-infra.documents.azure.com:443/", {'masterKey': os.environ["coreclrInfraKey"]} )) as client:
         try:
             #get_last_runtime_pipeline(client)
-            bucket_results(client)
+            bucket_from_disk()
 
         except errors.HTTPFailure as e:
             print('Error. {0}'.format(e))

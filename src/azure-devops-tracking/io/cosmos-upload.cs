@@ -127,7 +127,7 @@ public class CosmosUpload<T> where T : IDocument
             cosmosOperations.Add(HelixContainer.CreateItemAsync<T>(document, new PartitionKey(GetPartitionKey(document))).CaptureOperationResponse(document));
         }
 
-        Console.WriteLine($"{UploadQueue.Count}] -- Remaining.");
+        Console.WriteLine($"[{UploadQueue.Count}] -- Remaining.");
  
         bool encounteredError = false;
 

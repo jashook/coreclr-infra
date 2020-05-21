@@ -573,6 +573,12 @@ public class AzureDevopsTracking
         }
 
         model.SourceSha = build.SourceVersion;
+        
+        string[] buildNumberSplit = build.Uri.Split("/");
+        string buildNumber = buildNumberSplit[buildNumberSplit.Length - 1];
+
+        string azureDevOpsUri = $"https://dev.azure.com/dnceng/public/_build/results?buildId={buildNumber}&view=results";
+        model.BuildUri = azureDevOpsUri;
 
         var timeline = await Server.GetTimelineAsync(build.Project.Name, build.Id);
 

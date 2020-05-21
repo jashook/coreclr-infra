@@ -41,6 +41,7 @@ public class RuntimeModel : IDocument
     public List<AzureDevOpsJobModel> Jobs { get; set; }
 
     public string BuildNumber { get; set; }
+    public string BuildUri { get; set; }
 
     public BuildReason BuildReason { get; set; }
 
