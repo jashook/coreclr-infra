@@ -64,7 +64,7 @@ def bucket_results(client):
     jobs_link = "dbs/coreclr-infra/colls/runtime-jobs"
 
     # Get only jobs from 8 may to 11 may
-    jobs = list(client.QueryItems(jobs_link,
+    c = list(client.QueryItems(jobs_link,
                                        {
                                             'query': 'SELECT * FROM root job WHERE job.DateStart>@min_start',
                                             'parameters': [
@@ -104,9 +104,9 @@ def bucket_results(client):
         for queue in item["Queues"]:
             helix_queues_used[queue].append(item)
 
-    jobs_categorized = defaultdict(lambda: [])
+    jobs_categorized = defaultdict(defaultdict(lambda: []))
     for job in jobs:
-        jobs_categorized[job["JobGuid"]].append(job)
+        jobs_categorized[job["JobGuid"]][job["PipelineId"]].append(job)
 
     workitems_for_job = defaultdict(lambda: [])
     job_for_pipeline = defaultdict(lambda: [])
@@ -164,6 +164,8 @@ def bucket_results(client):
         total_run_time_seconds = total_run_time / 1000
 
         print("[{}] -- Workitems ({}). Total Setup Time ({}). Total Run Time ({})".format(pipeline, workitem_count, total_setup_time_seconds, total_run_time_seconds))
+
+    i = 0
 
 def get_last_runtime_pipeline(client):
     pipeline_link = "dbs/coreclr-infra/colls/runtime-pipelines"
