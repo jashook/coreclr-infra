@@ -181,7 +181,43 @@ def get_last_runtime_pipeline(client):
 
     for key in last_pipeline:
         print("[{}]: {}".format(key, last_pipeline[key]))
+
+def update_pickled_data(client):
+    helix_workitems_link = "dbs/coreclr-infra/colls/helix-workitems"
+    helix_submission_link = "dbs/coreclr-infra/colls/helix-submissions"
+
+    pipeline_link = "dbs/coreclr-infra/colls/runtime-pipelines"
+    jobs_link = "dbs/coreclr-infra/colls/runtime-jobs"
+
+    # Get only jobs from 8 may
+    jobs = list(client.QueryItems(jobs_link,
+                                    {
+                                        'query': 'SELECT * FROM root job WHERE job.DateStart>@min_start',
+                                        'parameters': [
+                                            {'name': '@min_start', 'value': "2020-05-08T02:30:52.635-07:00"}
+                                        ]
+                                    },
+                                    {'enableCrossPartitionQuery': True}))
+
+    pipeline_runs = list(client.ReadItems(pipeline_link, {'maxItemCount':1000}))
+    #jobs = list(client.ReadItems(jobs_link, {'maxItemCount':1000}))
+    helix_submissions = list(client.ReadItems(helix_submission_link, {'maxItemCount':1000}))
+    helix_workitems = list(client.ReadItems(helix_workitems_link, {'maxItemCount':1000}))
     
+    data_location = os.path.join("/Users/jashoo/data/")
+
+    with open(os.path.join(data_location, "jobs.txt"), "wb") as file_handle:
+        pickle.dump(jobs, file_handle)
+    
+    with open(os.path.join(data_location, "pipelines.txt"), "wb") as file_handle:
+        pickle.dump(pipeline_runs, file_handle)
+    
+    with open(os.path.join(data_location, "helix_submissions.txt"), "wb") as file_handle:
+        pickle.dump(helix_submissions, file_handle)
+
+    with open(os.path.join(data_location, "helix-workitems.txt"), "wb") as file_handle:
+        pickle.dump(helix_workitems, file_handle)
+
 def bucket_from_disk():
     data_location = os.path.join("/Users/jashoo/data/")
 
@@ -310,6 +346,7 @@ def main():
     with CosmosDBGuard(cosmos_client.CosmosClient("https://coreclr-infra.documents.azure.com:443/", {'masterKey': os.environ["coreclrInfraKey"]} )) as client:
         try:
             #get_last_runtime_pipeline(client)
+            #update_pickled_data(client)
             bucket_from_disk()
 
         except errors.HTTPFailure as e:
