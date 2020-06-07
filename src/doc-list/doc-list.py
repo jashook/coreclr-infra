@@ -29,8 +29,194 @@ class CosmosDBGuard(cosmos_client.CosmosClient):
         # extra cleanup in here
         self.obj = None
 
+def get_last_date():
+    data_location = os.path.join("/Users/jashoo/data/")
+    pipeline_runs = pickle.load(open(os.path.join(data_location, "pipelines.txt"), "rb" ))
+
+    pipeline_runs.sort(key=lambda item: item["DateStart"])
+    last_run = pipeline_runs[-1]
+
+    return last_run["DateStart"]
+
 ################################################################################
 ################################################################################
+
+def get_all_pipelines_run_for_user(user, pr_title):
+    data_location = os.path.join("/Users/jashoo/data/")
+
+    # jobs = pickle.load(open(os.path.join(data_location, "jobs.txt"), "rb" ))
+    pipeline_runs = pickle.load(open(os.path.join(data_location, "pipelines.txt"), "rb" ))
+    # helix_submissions = pickle.load(open(os.path.join(data_location, "helix_submissions.txt"), "rb" ))
+    # helix_workitems = pickle.load(open(os.path.join(data_location, "helix-workitems.txt"), "rb" ))
+
+    pipeline_runs.sort(key=lambda item: item["DateStart"])
+
+    pipelines_run_by_user = []
+    
+    for item in pipeline_runs:
+        if item["BuildReasonString"].lower() == "manual":
+            i = 0
+        
+        if item["PrSenderName"] == user and item["PrTitle"] == pr_title:
+            pipelines_run_by_user.append(item)
+    
+    jobs = pickle.load(open(os.path.join(data_location, "jobs.txt"), "rb" ))
+    helix_submissions = pickle.load(open(os.path.join(data_location, "helix_submissions.txt"), "rb" ))
+    helix_workitems = pickle.load(open(os.path.join(data_location, "helix-workitems.txt"), "rb" ))
+
+    print('Found {0} helix submissions'.format(len(helix_submissions)))
+    print('Found {0} helix workitems'.format(len(helix_workitems)))
+
+    pipeline_id_to_run = defaultdict(lambda: None)
+    for pipeline in pipeline_runs:
+        assert pipeline["id"] not in pipeline_id_to_run
+        pipeline_id_to_run[pipeline["id"]] = pipeline
+
+    submission_by_pr_number = defaultdict(lambda: [])
+    submissions_grouped_by_source = defaultdict(lambda: [])
+    buckets = defaultdict(lambda: [])
+
+    for submission in helix_submissions:
+        submissions_grouped_by_source[submission["Source"]].append(submission)
+
+        if "pull" in submission["Source"]:
+            pr_number = submission["Source"].split("pull/")[1].split("/merge")[0]
+            submission_by_pr_number[pr_number] = submission
+
+    ci_work_items = submissions_grouped_by_source["ci/public/dotnet/runtime/refs/heads/master"]
+    helix_queues_used = defaultdict(lambda: [])
+
+    for item in ci_work_items:
+        for queue in item["Queues"]:
+            helix_queues_used[queue].append(item)
+
+    jobs_categorized = defaultdict(lambda: defaultdict(lambda: None))
+    for job in jobs:
+        if jobs_categorized[job["JobGuid"]][job["PipelineId"]] != None:
+            assert jobs_categorized[job["JobGuid"]][job["PipelineId"]]["ElapsedTime"] == job["ElapsedTime"]
+            
+        jobs_categorized[job["JobGuid"]][job["PipelineId"]] = job
+
+    workitems_for_job = defaultdict(lambda: [])
+    job_for_pipeline = defaultdict(lambda: [])
+
+    job_id_to_job = defaultdict(lambda: None)
+    for job in jobs:
+        assert job["id"] not in job_id_to_job
+        job_id_to_job[job["id"]] = job
+
+    not_found_list = []
+
+    workitem_map = defaultdict(lambda: None)
+    for workitem in helix_workitems:
+        possible_jobs = jobs_categorized[workitem["JobId"]]
+
+        found = False
+        job = jobs_categorized[workitem["JobId"]][workitem["RuntimePipelineId"]]
+
+        if job != None:
+            found = True
+            assert workitem["id"] not in workitem_map
+            assert workitem["RuntimePipelineId"] in pipeline_id_to_run
+            workitem_map[workitem["id"]] = (workitem, job, pipeline_id_to_run[workitem["RuntimePipelineId"]])
+
+            workitems_for_job[job["id"]].append(workitem)
+
+        if not found:
+            not_found_list.append(workitem)
+
+    for job_id in workitems_for_job:
+        job = job_id_to_job[job_id]
+        job_for_pipeline[job["PipelineId"]].append(job)
+
+    sorted_pipelines = [item for item in job_for_pipeline]
+    sorted_pipelines.sort()
+
+    for pipeline in pipelines_run_by_user:
+        pipeline_id = pipeline["id"]
+    
+        # get a like pipeline
+        index = 0
+        for index, item in enumerate(pipeline_runs):
+            if item["id"] == pipeline_id:
+                break
+
+        compare_pipeline = None
+
+        index -= 1
+        while index != -1:
+            current_pipeline = pipeline_runs[index]
+            if pipeline["BuildReasonString"] == current_pipeline["BuildReasonString"]:
+                if pipeline["IsCoreclrRun"] == current_pipeline["IsCoreclrRun"] and pipeline["IsLibrariesRun"] == current_pipeline["IsLibrariesRun"] and pipeline["IsMonoRun"] == current_pipeline["IsMonoRun"]:
+                    compare_run = current_pipeline
+                    break
+            
+            index -= 1
+
+        assert compare_run is not None
+
+        compare_pipeline_id = compare_run["id"]
+        
+        base_jobs = [item for item in job_for_pipeline[pipeline_id]]
+        diff_jobs = [item for item in job_for_pipeline[compare_pipeline_id]]
+
+        categorized_workitems = defaultdict(lambda: defaultdict(lambda: []))
+
+        base_workitems = []
+
+        for job in base_jobs:
+            assert job["Name"] not in categorized_workitems["base"]
+            for workitem in workitems_for_job[job["id"]]:
+                categorized_workitems["base"][job["Name"]].append(workitem)
+
+        diff_workitems = []
+        for job in diff_jobs:
+            assert job["Name"] not in categorized_workitems["diff"]
+            for workitem in workitems_for_job[job["id"]]:
+                categorized_workitems["diff"][job["Name"]].append(workitem)
+
+        total_runtime_base_test_setup_time = 0
+        total_runtime_diff_test_setup_time = 0
+
+        for job in categorized_workitems["base"]:
+            if "Runtime Tests" not in job:
+                continue 
+
+            print(job)
+
+            runtime_base_test_setup_time = 0
+            runtime_diff_test_setup_time = 0
+
+            base_workitems = categorized_workitems["base"][job]
+            diff_workitems = categorized_workitems["diff"][job]
+
+            workitems_by_name = defaultdict(lambda: defaultdict(lambda: []))
+
+            for workitem in base_workitems:
+                workitems_by_name[workitem["Name"]]["base"].append(workitem)
+
+            for workitem in diff_workitems:
+                workitems_by_name[workitem["Name"]]["diff"].append(workitem)
+
+            for name in workitems_by_name:
+                base_workitems_by_name = workitems_by_name[name]["base"]
+                diff_workitems_by_name = workitems_by_name[name]["diff"]
+
+                assert(len(base_workitems_by_name) == len(diff_workitems_by_name))
+
+                for index in range(len(base_workitems_by_name)):
+                    runtime_base_test_setup_time += base_workitems_by_name[index]["ElapsedSetupTime"]
+                    runtime_diff_test_setup_time += diff_workitems_by_name[index]["ElapsedSetupTime"]
+                    print("[{}] Base setup time {}, Diff setup time {}.".format(name, base_workitems_by_name[index]["ElapsedSetupTime"], diff_workitems_by_name[index]["ElapsedSetupTime"]))
+
+            total_runtime_base_test_setup_time += runtime_base_test_setup_time
+            total_runtime_diff_test_setup_time += runtime_diff_test_setup_time
+
+            print("base setup time: {}, diff setup time: {}".format(runtime_base_test_setup_time, runtime_diff_test_setup_time))
+            print()
+
+        print("Total base setup time: {}, total diff setup time: {}".format(runtime_base_test_setup_time, runtime_diff_test_setup_time))
+
 
 def read_helix_workitems_for_pipeline(client, pipeline_id=None):
     runtime_collection_link = "dbs/coreclr-infra/colls/runtime-pipelines"
@@ -192,7 +378,7 @@ def update_pickled_data(client):
     pipeline_runs = list(client.ReadItems(pipeline_link, {'maxItemCount':1000}))
     #jobs = list(client.ReadItems(jobs_link, {'maxItemCount':1000}))
     helix_submissions = list(client.ReadItems(helix_submission_link, {'maxItemCount':1000}))
-    helix_workitems = list(client.ReadItems(helix_workitems_link, {'maxItemCount':1000}))
+    helix_workitems = list(client.ReadItems(helix_workitems_link, {'maxItemCount':1500}))
 
     # Get only jobs from 8 may
     jobs = list(client.QueryItems(jobs_link,
@@ -800,12 +986,7 @@ def bucket_from_disk():
                     total_setup_time += workitem["ElapsedSetupTime"]
                     total_run_time += workitem["ElapsedRunTime"]
 
-                    if "PassedTests" not in workitem:
-                        total_tests_run = "N/A"
-                        total_failed_tests = "N/A"
-                        total_passed_tests = "N/A"
-                    
-                    else:
+                    if "PassedTests" in workitem:
                         total_failed_tests += workitem["FailedTests"]
                         total_passed_tests += workitem["PassedTests"]
                         total_tests_run += workitem["TotalRunTests"]
@@ -902,9 +1083,11 @@ def main():
     with CosmosDBGuard(cosmos_client.CosmosClient("https://coreclr-infra.documents.azure.com:443/", {'masterKey': os.environ["coreclrInfraKey"]} )) as client:
         try:
             #get_last_runtime_pipeline(client)
-            update_pickled_data(client)
-            bucket_from_disk()
-            #compare_run("20200522.70", "20200522.69")
+            #update_pickled_data(client)
+            #bucket_from_disk()
+            #compare_run("20200526.78", "20200526.76")
+
+            get_all_pipelines_run_for_user("jashook", "Submit to helix without managed pdbs")
 
         except errors.HTTPFailure as e:
             print('Error. {0}'.format(e))

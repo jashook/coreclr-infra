@@ -573,6 +573,7 @@ public class AzureDevopsTracking
         }
 
         model.SourceSha = build.SourceVersion;
+        model.SourceBranch = build.SourceBranch;
         
         string[] buildNumberSplit = build.Uri.Split("/");
         string buildNumber = buildNumberSplit[buildNumberSplit.Length - 1];
