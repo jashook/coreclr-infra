@@ -57,7 +57,7 @@ public class RuntimeModel : IDocument
     public string PrSourceSha { get; set; }
 
     public string SourceSha { get; set; }
-
+    public string SourceBranch { get; set; }
     public string PrTitle { get; set; }
 
     public string PrSenderName { get; set; }

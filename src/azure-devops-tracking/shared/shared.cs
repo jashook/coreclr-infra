@@ -89,7 +89,7 @@ public class Shared
 
     public static async Task<string> GetAsync(string uri, int retryCount = 5)
     {
-        Trace.Assert(Uri.IsWellFormedUriString(uri, UriKind.Absolute));
+        Debug.Assert(Uri.IsWellFormedUriString(uri, UriKind.Absolute));
 
         if (!Uri.IsWellFormedUriString(uri, UriKind.Absolute))
         {

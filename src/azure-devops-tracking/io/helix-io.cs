@@ -356,7 +356,9 @@ public class HelixIO
                 return;
             }
 
-            XmlDocument doc = new XmlDocument();
+            try
+            {
+                XmlDocument doc = new XmlDocument();
             doc.LoadXml(xmlContents);
 
             int totalRunTests = 0;
@@ -376,49 +378,54 @@ public class HelixIO
 
                 failedTests += amountOfFailedTests;
 
-            //     foreach (XmlNode test in collection.SelectNodes("test"))
-            //     {
-            //         string console = null;
-            //         if (test.ChildNodes.Count > 0)
-            //         {
-            //             console = test.ChildNodes[0].InnerText;
-            //         }
+                //     foreach (XmlNode test in collection.SelectNodes("test"))
+                //     {
+                //         string console = null;
+                //         if (test.ChildNodes.Count > 0)
+                //         {
+                //             console = test.ChildNodes[0].InnerText;
+                //         }
 
-            //         string testName = test.Attributes["name"].Value;
-            //         bool passed = test.Attributes["result"].Value == "Pass" ? true : false;
-            //         double timeRun = Double.Parse(test.Attributes["time"].Value);
-                    
-            //         Test testModel = new Test();
+                //         string testName = test.Attributes["name"].Value;
+                //         bool passed = test.Attributes["result"].Value == "Pass" ? true : false;
+                //         double timeRun = Double.Parse(test.Attributes["time"].Value);
+                        
+                //         Test testModel = new Test();
 
-            //         if (passed)
-            //         {
-            //             testModel.Console = null;
-            //         }
-            //         else
-            //         {
-            //             testModel.Console = console;
-            //         }
+                //         if (passed)
+                //         {
+                //             testModel.Console = null;
+                //         }
+                //         else
+                //         {
+                //             testModel.Console = console;
+                //         }
 
-            //         testModel.ElapsedTime = timeRun;
-            //         testModel.Name = testName;
-            //         testModel.Passed = passed;
+                //         testModel.ElapsedTime = timeRun;
+                //         testModel.Name = testName;
+                //         testModel.Passed = passed;
 
-            //         testModel.Id = Guid.NewGuid().ToString();
-            //         testModel.HelixWorkItemId = workItemModel.Id;
+                //         testModel.Id = Guid.NewGuid().ToString();
+                //         testModel.HelixWorkItemId = workItemModel.Id;
 
-            //         SubmitTestToUpload(testModel);
-            //     }
+                //         SubmitTestToUpload(testModel);
+                //     }
+                }
+
+                totalRunTests = passedTests + failedTests;
+
+                workItemModel.TotalRunTests = totalRunTests;
+                workItemModel.PassedTests = passedTests;
+                workItemModel.FailedTests = failedTests;
+
+                modelToAdd.TotalRunTests = workItemModel.TotalRunTests;
+                modelToAdd.PassedTests = workItemModel.PassedTests;
+                modelToAdd.FailedTests = workItemModel.FailedTests;
             }
-
-            totalRunTests = passedTests + failedTests;
-
-            workItemModel.TotalRunTests = totalRunTests;
-            workItemModel.PassedTests = passedTests;
-            workItemModel.FailedTests = failedTests;
-
-            modelToAdd.TotalRunTests = workItemModel.TotalRunTests;
-            modelToAdd.PassedTests = workItemModel.PassedTests;
-            modelToAdd.FailedTests = workItemModel.FailedTests;
+            catch (Exception e)
+            {
+                // No test stats for this workitem.
+            }
         }
 
         if (logUri != null)
@@ -499,7 +506,24 @@ public class HelixIO
                     }
                     catch (Exception e)
                     {
-                        Trace.Assert(false);
+                        string path = @"strange_uris.txt";
+                        if (!File.Exists(path))
+                        {
+                            // Create a file to write to.
+                            using (StreamWriter sw = File.CreateText(path))
+                            {
+                                sw.WriteLine($"{logUri}");
+                            }
+                        }
+                        else
+                        {
+                            using (StreamWriter sw = File.AppendText(path))
+                            {
+                                sw.WriteLine($"{logUri}");
+                            }
+                        }
+
+                        return;
                     }
 
                 }
@@ -539,7 +563,24 @@ public class HelixIO
                     }
                     catch (Exception e)
                     {
-                        Trace.Assert(false);
+                        string path = @"strange_uris.txt";
+                        if (!File.Exists(path))
+                        {
+                            // Create a file to write to.
+                            using (StreamWriter sw = File.CreateText(path))
+                            {
+                                sw.WriteLine($"{logUri}");
+                            }
+                        }
+                        else
+                        {
+                            using (StreamWriter sw = File.AppendText(path))
+                            {
+                                sw.WriteLine($"{logUri}");
+                            }
+                        }
+
+                        return;
                     }
                 }
 

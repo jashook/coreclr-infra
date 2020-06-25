@@ -6,13 +6,16 @@
 
 import azure.cosmos.documents as documents
 import azure.cosmos.cosmos_client as cosmos_client
-import azure.cosmos.errors as errors
+import azure.cosmos.exceptions as exceptions
 import datetime
 import math
 import pickle
+import sys
 import os
 
 from collections import defaultdict
+
+from complete_pipeline_run import *
 
 ################################################################################
 # Helper class
@@ -29,327 +32,136 @@ class CosmosDBGuard(cosmos_client.CosmosClient):
         # extra cleanup in here
         self.obj = None
 
+def get_last_date():
+    data_location = os.path.join("/Users/jashoo/data/")
+    pipeline_runs = pickle.load(open(os.path.join(data_location, "pipelines.txt"), "rb" ))
+
+    pipeline_runs.sort(key=lambda item: item["DateStart"])
+    last_run = pipeline_runs[-1]
+
+    return last_run["DateStart"]
+
 ################################################################################
 ################################################################################
 
-def read_helix_workitems_for_pipeline(client, pipeline_id=None):
-    runtime_collection_link = "dbs/coreclr-infra/colls/runtime-pipelines"
-    helix_collection_link = "dbs/coreclr-infra/colls/helix-jobs"
+def add_calculated_data_to_db(db, min_date):
+    pipeline_container = db.get_container_client("runtime-pipelines")
+    pipeline_runs = list(pipeline_container.read_all_items(max_item_count=1000))
 
-    pipeline_id = "20200505.36"
+    pipeline_runs = [item for item in pipeline_runs if datetime.datetime.strptime(item["DateStart"], "%Y-%m-%dT%H:%M:%S") > min_date]
 
-    if pipeline_id is None:
-        runtime_docs = list(client.ReadItems(runtime_collection_link, {'maxItemCount': 1000}))
-        last_pipeline = runtime_docs[-1]
+    pipeline_runs.sort(key=lambda item: item["DateStart"])
+    pipeline_runs.reverse()
 
-        pipeline_id = last_pipeline["id"]
+    complete_pipelines = []
+    failed_pipelines = []
 
-    discontinued_items = list(client.QueryItems(helix_collection_link,
-                                       {
-                                            'query': 'SELECT * FROM root r WHERE r.RuntimePipelineId=@pipeline_id',
-                                            'parameters': [
-                                                {'name': '@pipeline_id', 'value': pipeline_id}
-                                            ]
-                                       },
-                                       {'enableCrossPartitionQuery': True}))
+    for index, pipeline in enumerate(pipeline_runs):
+        item_number = index + 1
+        complete_pipeline = CompletePipelineRun(db, pipeline, verbose=False)
+        complete_pipeline.update_pipeline_if_needed()
+        print("[{}:{}]: {}: Setup time: {}. Libraries setup time: {}, CoreCLR setup time: {}, Mono setup time: {}, Run time: {}. Total tests: {}. Failed tests: {}.".format(item_number, len(pipeline_runs), pipeline["id"], complete_pipeline.total_setup_time, complete_pipeline.total_libraries_setup_time, complete_pipeline.total_coreclr_setup_time , complete_pipeline.total_mono_setup_time, complete_pipeline.total_run_time, complete_pipeline.total_tests_run, complete_pipeline.total_test_failures))
+        
+        if not complete_pipeline.passed():
+            failed_pipelines.append(complete_pipeline)
 
-    print()
+        complete_pipelines.append(complete_pipeline)
 
+    return complete_pipelines, failed_pipelines
 
-def bucket_results(client):
-    helix_workitems_link = "dbs/coreclr-infra/colls/helix-workitems"
-    helix_submission_link = "dbs/coreclr-infra/colls/helix-submissions"
+def analyze(failed_pipelines, only_ci=False):
+    """ Go through failing runs and give failure reasons
+    """
 
-    pipeline_link = "dbs/coreclr-infra/colls/runtime-pipelines"
-    jobs_link = "dbs/coreclr-infra/colls/runtime-jobs"
+    failure_types = defaultdict(lambda: [])
+    timeouts_by_queue = defaultdict(lambda: 0)
 
-    # Get only jobs from 8 may
-    jobs = list(client.QueryItems(jobs_link,
-                                    {
-                                        'query': 'SELECT * FROM root job WHERE job.DateStart>@min_start',
-                                        'parameters': [
-                                            {'name': '@min_start', 'value': "2020-05-08T02:30:52.635-07:00"}
-                                        ]
-                                    },
-                                    {'enableCrossPartitionQuery': True}))
+    def add_to_timeout_queue(queue):
+        if "@" in queue:
+            queue = queue.split("@")[0]
+            queue = queue.split(")")[1]
 
-    pipeline_runs = list(client.ReadItems(pipeline_link, {'maxItemCount':1000}))
-    #jobs = list(client.ReadItems(jobs_link, {'maxItemCount':1000}))
-    helix_submissions = list(client.ReadItems(helix_submission_link, {'maxItemCount':1000}))
-    helix_workitems = list(client.ReadItems(helix_workitems_link, {'maxItemCount':1000}))
-    
-    print('Found {0} helix submissions'.format(len(helix_submissions)))
-    print('Found {0} helix workitems'.format(len(helix_workitems)))
+        timeouts_by_queue[queue.lower()] += 1
 
-    pipeline_id_to_run = defaultdict(lambda: None)
-    for pipeline in pipeline_runs:
-        assert pipeline["id"] not in pipeline_id_to_run
-        pipeline_id_to_run[pipeline["id"]] = pipeline
+    for complete_pipeline in failed_pipelines:
+        if only_ci is True and complete_pipeline.pipeline["BuildReasonString"] != "BatchedCI":
+            continue
+        
+        failure_reasons = complete_pipeline.analyze()
 
-    submission_by_pr_number = defaultdict(lambda: [])
-    submissions_grouped_by_source = defaultdict(lambda: [])
-    buckets = defaultdict(lambda: [])
+        for failure_reason in failure_reasons:
+            submissions = []
+            if failure_reason == "Helix Submission Timeout":
+                for failure in failure_reasons[failure_reason]:
+                    submissions += failure[2]
 
-    for submission in helix_submissions:
-        submissions_grouped_by_source[submission["Source"]].append(submission)
+                for submission in submissions:
+                    queues = submission["Queues"]
+                    for item in queues:
+                        add_to_timeout_queue(item)
 
-        if "pull" in submission["Source"]:
-            pr_number = submission["Source"].split("pull/")[1].split("/merge")[0]
-            submission_by_pr_number[pr_number] = submission
+            failure_types[failure_reason].append(complete_pipeline)
 
-    ci_work_items = submissions_grouped_by_source["ci/public/dotnet/runtime/refs/heads/master"]
-    helix_queues_used = defaultdict(lambda: [])
+    for failure in failure_types:
+        print("[{}]: ({})".format(failure, len(failure_types[failure])))
+        print("-----------------------------------------------------------")
 
-    for item in ci_work_items:
-        for queue in item["Queues"]:
-            helix_queues_used[queue].append(item)
-
-    jobs_categorized = defaultdict(defaultdict(lambda: []))
-    for job in jobs:
-        jobs_categorized[job["JobGuid"]][job["PipelineId"]].append(job)
-
-    workitems_for_job = defaultdict(lambda: [])
-    job_for_pipeline = defaultdict(lambda: [])
-
-    job_id_to_job = defaultdict(lambda: None)
-    for job in jobs:
-        assert job["id"] not in job_id_to_job
-        job_id_to_job[job["id"]] = job
-
-    workitem_map = defaultdict(lambda: None)
-    for workitem in helix_workitems:
-        possible_jobs = jobs_categorized[workitem["JobId"]]
-
-        found = False
-        for job in possible_jobs:
-            if job["PipelineId"] == workitem["RuntimePipelineId"]:
-                found = True
-                assert workitem["id"] not in workitem_map
-                assert workitem["RuntimePipelineId"] in pipeline_id_to_run
-                workitem_map[workitem["id"]] = (workitem, job, pipeline_id_to_run[workitem["RuntimePipelineId"]])
-
-                workitems_for_job[job["id"]].append(workitem)
-
-                break
+        for runs in failure_types[failure]:
+            print("[{}]: {}".format(runs.pipeline["id"], runs.pipeline["BuildUri"]))
             
-        assert found
+        print("-----------------------------------------------------------")
 
-    for job_id in workitems_for_job:
-        job = job_id_to_job[job_id]
-        job_for_pipeline[job["PipelineId"]].append(job)
+    for queue in timeouts_by_queue:
+        print("[{}]: {}".format(queue, timeouts_by_queue[queue]))
 
-    sorted_pipelines = [item for item in job_for_pipeline]
-    sorted_pipelines.sort()
+def analyze_submisions(complete_pipelines, queue):
+    submissions = []
+    for index, complete_pipeline in enumerate(complete_pipelines):
+        submissions += complete_pipeline.analyze_submissions()
 
-    # Time spent in setup by pipeline
-    for pipeline in sorted_pipelines:
+    submissions_by_job_name = defaultdict(lambda: [])
+
+    for submission in submissions:
+        submissions_by_job_name[submission["JobName"]].append(submission)
+
+    print("Submissions:")
+    print("-------------------------------------------------------------------")
+
+    for job in submissions_by_job_name:
         total_setup_time = 0
         total_run_time = 0
 
-        workitem_count = 0
+        for submission in submissions_by_job_name[job]:
+            total_setup_time += submission["TotalSetupTime"]
+            total_run_time += submission["TotalRunTime"]
 
-        helix_submission_jobs = job_for_pipeline[pipeline]
+        average_setup_time = total_setup_time / len(submissions_by_job_name[job])
+        average_run_time = total_run_time / len(submissions_by_job_name[job])
 
-        # These are only jobs with helix submissions
-        for job in helix_submission_jobs:
-            workitems_in_job = workitems_for_job[job["id"]]
-
-            workitem_count += len(workitems_in_job)
-
-            for workitem in workitems_in_job:
-                total_setup_time += workitem["ElapsedSetupTime"]
-                total_run_time += workitem["ElapsedRunTime"]
-
-        total_setup_time_seconds = total_setup_time / 1000
-        total_run_time_seconds = total_run_time / 1000
-
-        print("[{}] -- Workitems ({}). Total Setup Time ({}). Total Run Time ({})".format(pipeline, workitem_count, total_setup_time_seconds, total_run_time_seconds))
-
-    i = 0
-
-def get_last_runtime_pipeline(client):
-    pipeline_link = "dbs/coreclr-infra/colls/runtime-pipelines"
-    pipeline_runs = list(client.ReadItems(pipeline_link, {'maxItemCount':1000}))
-
-    pipeline_runs.sort(key=lambda item: item["DateStart"])
-
-    last_pipeline = pipeline_runs[-1]
-
-    print("Last Ingested Pipeline: {}".format(last_pipeline["id"]))
-    print("------------------------------------------------------")
-    print()
-
-    for key in last_pipeline:
-        print("[{}]: {}".format(key, last_pipeline[key]))
-
-def update_pickled_data(client):
-    helix_workitems_link = "dbs/coreclr-infra/colls/helix-workitems"
-    helix_submission_link = "dbs/coreclr-infra/colls/helix-submissions"
-
-    pipeline_link = "dbs/coreclr-infra/colls/runtime-pipelines"
-    jobs_link = "dbs/coreclr-infra/colls/runtime-jobs"
-
-    # Get only jobs from 8 may
-    jobs = list(client.QueryItems(jobs_link,
-                                    {
-                                        'query': 'SELECT * FROM root job WHERE job.DateStart>@min_start',
-                                        'parameters': [
-                                            {'name': '@min_start', 'value': "2020-05-08T02:30:52.635-07:00"}
-                                        ]
-                                    },
-                                    {'enableCrossPartitionQuery': True}))
-
-    pipeline_runs = list(client.ReadItems(pipeline_link, {'maxItemCount':1000}))
-    #jobs = list(client.ReadItems(jobs_link, {'maxItemCount':1000}))
-    helix_submissions = list(client.ReadItems(helix_submission_link, {'maxItemCount':1000}))
-    helix_workitems = list(client.ReadItems(helix_workitems_link, {'maxItemCount':1000}))
-    
-    data_location = os.path.join("/Users/jashoo/data/")
-
-    with open(os.path.join(data_location, "jobs.txt"), "wb") as file_handle:
-        pickle.dump(jobs, file_handle)
-    
-    with open(os.path.join(data_location, "pipelines.txt"), "wb") as file_handle:
-        pickle.dump(pipeline_runs, file_handle)
-    
-    with open(os.path.join(data_location, "helix_submissions.txt"), "wb") as file_handle:
-        pickle.dump(helix_submissions, file_handle)
-
-    with open(os.path.join(data_location, "helix-workitems.txt"), "wb") as file_handle:
-        pickle.dump(helix_workitems, file_handle)
-
-def bucket_from_disk():
-    data_location = os.path.join("/Users/jashoo/data/")
-
-    jobs = pickle.load(open(os.path.join(data_location, "jobs.txt"), "rb" ))
-    pipeline_runs = pickle.load(open(os.path.join(data_location, "pipelines.txt"), "rb" ))
-    helix_submissions = pickle.load(open(os.path.join(data_location, "helix_submissions.txt"), "rb" ))
-    helix_workitems = pickle.load(open(os.path.join(data_location, "helix-workitems.txt"), "rb" ))
-    
-    print('Found {0} helix submissions'.format(len(helix_submissions)))
-    print('Found {0} helix workitems'.format(len(helix_workitems)))
-
-    pipeline_id_to_run = defaultdict(lambda: None)
-    for pipeline in pipeline_runs:
-        assert pipeline["id"] not in pipeline_id_to_run
-        pipeline_id_to_run[pipeline["id"]] = pipeline
-
-    submission_by_pr_number = defaultdict(lambda: [])
-    submissions_grouped_by_source = defaultdict(lambda: [])
-    buckets = defaultdict(lambda: [])
-
-    for submission in helix_submissions:
-        submissions_grouped_by_source[submission["Source"]].append(submission)
-
-        if "pull" in submission["Source"]:
-            pr_number = submission["Source"].split("pull/")[1].split("/merge")[0]
-            submission_by_pr_number[pr_number] = submission
-
-    ci_work_items = submissions_grouped_by_source["ci/public/dotnet/runtime/refs/heads/master"]
-    helix_queues_used = defaultdict(lambda: [])
-
-    for item in ci_work_items:
-        for queue in item["Queues"]:
-            helix_queues_used[queue].append(item)
-
-    jobs_categorized = defaultdict(lambda: defaultdict(lambda: None))
-    for job in jobs:
-        assert jobs_categorized[job["JobGuid"]][job["PipelineId"]] == None
-        jobs_categorized[job["JobGuid"]][job["PipelineId"]] = job
-
-    workitems_for_job = defaultdict(lambda: [])
-    job_for_pipeline = defaultdict(lambda: [])
-
-    job_id_to_job = defaultdict(lambda: None)
-    for job in jobs:
-        assert job["id"] not in job_id_to_job
-        job_id_to_job[job["id"]] = job
-
-    not_found_list = []
-
-    workitem_map = defaultdict(lambda: None)
-    for workitem in helix_workitems:
-        possible_jobs = jobs_categorized[workitem["JobId"]]
-
-        found = False
-        job = jobs_categorized[workitem["JobId"]][workitem["RuntimePipelineId"]]
-
-        if job != None:
-            found = True
-            assert workitem["id"] not in workitem_map
-            assert workitem["RuntimePipelineId"] in pipeline_id_to_run
-            workitem_map[workitem["id"]] = (workitem, job, pipeline_id_to_run[workitem["RuntimePipelineId"]])
-
-            workitems_for_job[job["id"]].append(workitem)
-
-        if not found:
-            not_found_list.append(workitem)
-
-    for job_id in workitems_for_job:
-        job = job_id_to_job[job_id]
-        job_for_pipeline[job["PipelineId"]].append(job)
-
-    sorted_pipelines = [item for item in job_for_pipeline]
-    sorted_pipelines.sort()
-
-    with open("data.md", "w") as file_handle:
-        file_handle.write("# dotnet/runtime data" + os.linesep)
-
-        start_date = datetime.datetime.strptime(pipeline_id_to_run[sorted_pipelines[0]]["DateStart"], "%Y-%m-%dT%H:%M:%f")
-        end_date = datetime.datetime.strptime(pipeline_id_to_run[sorted_pipelines[-1]]["DateStart"], "%Y-%m-%dT%H:%M:%f")
-
-        file_handle.write(os.linesep)
-        file_handle.write("### Spans {}/{}/{} to {}/{}/{}".format(start_date.month, start_date.day, start_date.year, end_date.month, end_date.day, end_date.year) + os.linesep)
-        
-        file_handle.write(os.linesep)
-
-        file_handle.write("## All pipelines (Sorted by date)." + os.linesep)
-        file_handle.write(os.linesep)
-
-        rows = ["Pipeline ID", "WorkItem Count", "Total Setup Time (seconds)", "Total Run Time (seconds)"]
-        format_str = "|{}" * len(rows) + "|"
-        hyphen_str = "|--------" * len(rows) + "|"
-        file_handle.write(format_str.format(*rows) + os.linesep)
-        file_handle.write(hyphen_str)
-
-        # Time spent in setup by pipeline
-        for pipeline in sorted_pipelines:
-            total_setup_time = 0
-            total_run_time = 0
-
-            workitem_count = 0
-
-            pipeline_object = pipeline_id_to_run[pipeline]
-            helix_submission_jobs = job_for_pipeline[pipeline]
-
-            # These are only jobs with helix submissions
-            for job in helix_submission_jobs:
-                workitems_in_job = workitems_for_job[job["id"]]
-
-                workitem_count += len(workitems_in_job)
-
-                for workitem in workitems_in_job:
-                    total_setup_time += workitem["ElapsedSetupTime"]
-                    total_run_time += workitem["ElapsedRunTime"]
-
-            total_setup_time_seconds = total_setup_time / 1000
-            total_run_time_seconds = total_run_time / 1000
-
-            file_handle.write(os.linesep)
-
-            if "BuildUri" in pipeline_object:
-                pipeline = "[{}]({})".format(pipeline, pipeline_object["BuildUri"])
-
-            file_handle.write(format_str.format(pipeline, workitem_count, total_setup_time_seconds, total_run_time_seconds))
+        print("[{}]: {} Submissions, Setup Time {}, Run Time {}".format(job, len(submissions_by_job_name[job]), average_setup_time, average_run_time))
 
 def main():
     with CosmosDBGuard(cosmos_client.CosmosClient("https://coreclr-infra.documents.azure.com:443/", {'masterKey': os.environ["coreclrInfraKey"]} )) as client:
         try:
             #get_last_runtime_pipeline(client)
             #update_pickled_data(client)
-            bucket_from_disk()
+            #bucket_from_disk()
+            #compare_run("20200526.78", "20200526.76")
 
-        except errors.HTTPFailure as e:
+            #get_all_pipelines_run_for_user("jashook", "Submit to helix without managed pdbs")
+            db = client.get_database_client("coreclr-infra")
+
+            # Only look back one week
+            seven_days_ago = datetime.datetime.now() - datetime.timedelta(days=7)
+            complete_pipelines, failed_pipelines = add_calculated_data_to_db(db, seven_days_ago)
+
+            analyze(failed_pipelines)
+
+            print ("----------------------------------------------------------")
+
+            analyze_submisions(complete_pipelines, "ubuntu.1804.armarch.open")
+
+        except exceptions.CosmosHttpResponseError as e:
             print('Error. {0}'.format(e))
 
         print()
