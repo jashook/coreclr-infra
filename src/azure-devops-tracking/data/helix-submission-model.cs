@@ -78,6 +78,7 @@ public class HelixSubmissionModel : IDocument
 {
     [JsonProperty(PropertyName = "id")]
     public string Id { get; set; }
+    public string HelixJobName { get; set; }
     public string Console { get; set; }
     public double ElapsedTime { get; set; }
     public string JobId { get; set; }

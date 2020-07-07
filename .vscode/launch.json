@@ -12,7 +12,7 @@
             "console": "integratedTerminal"
         },
         {
-            "name": ".NET Core Launch (console)",
+            "name": "azure-devops-tracking",
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "build",
@@ -28,6 +28,26 @@
                 //"-7d"
             ],
             "cwd": "${workspaceFolder}/src/azure-devops-tracking",
+            "console": "internalConsole",
+            "stopAtEntry": false
+        },
+        {
+            "name": "kusto",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-kusto",
+            "program": "${workspaceFolder}/src/kusto/bin/Debug/netcoreapp3.1/kusto.dll",
+            "args": [
+                //"--recreate-db"
+                // "--re-update",
+                // "--timespan",
+                // "-1d"
+                // "--recalculate-pipeline-elapsed-time",
+                //"--redownload-logs",
+                //"--timespan",
+                //"-7d"
+            ],
+            "cwd": "${workspaceFolder}/src/kusto",
             "console": "internalConsole",
             "stopAtEntry": false
         },

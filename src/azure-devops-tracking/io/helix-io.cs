@@ -34,7 +34,65 @@ using models;
 using ev27;
 using DevOps.Util;
 
+using Kusto.Data;
+using Kusto.Data.Common;
+using Kusto.Ingest;
+
 ////////////////////////////////////////////////////////////////////////////////
+
+internal class JobSubmission
+{
+    public long JobId { get; set; }
+    public string JobName { get; set; }
+    public string Source { get; set; }
+    public string Type { get; set; }
+    public int Creator { get; set; }
+    public DateTime Queued { get; set; }
+    public DateTime Started { get; set; }
+    public DateTime Finished { get; set; }
+    public int CountPassedfTests { get; set; }
+    public int CountFailedTests { get; set; }
+    public int CountSkippedTests { get; set; }
+    public int CountItemsPassed { get; set; }
+    public int CountItemsWarnings { get; set; }
+    public int CountitemsBadExit { get; set; }
+    public int CountItemsFailed { get; set; }
+    public int CountItemsError { get; set; }
+    public int CountItemsTimeout { get; set; }
+    public int CountInitialItems { get; set; }
+    public int CountTotalItems { get; set; }
+    public string JobListUri { get; set; }
+    public string QueueName { get; set; }
+    public int CountItemsNotRun { get; set; }
+    public int CountTestsPassedOnRetry { get; set; }
+    public int CountItemsPassedOnRetry { get; set; }
+    public string Repository { get; set; }
+    public string Branch { get; set; }
+    public string BuildNumber { get; set; }
+}
+
+internal class WorkItemDetails
+{
+    public string WorkItemFriendlyName { get; set; }
+    public string LogUri { get; set; }
+    public string JobName { get; set; }
+    public string WorkItemName { get; set; }
+    public int PassCount { get; set; }
+    public int FailCount { get; set; }
+    public int SkipCount { get; set; }
+    public int WarnCount { get; set; }
+    public DateTime Queued { get; set; }
+    public DateTime Started { get; set; }
+    public DateTime Finished { get; set; }
+    public int ExitCode { get; set; }
+    public string ConsoleUri { get; set; }
+    public string MachineName { get; set; }
+    public string WorkItemType { get; set; }
+    public string TestResultsUri { get; set; }
+    public int PassOnRetryCount { get; set; }
+    public int Attempt { get; set; }
+
+}
 
 public class HelixIO
 {
@@ -116,47 +174,195 @@ public class HelixIO
         Trace.Assert(helixJobs.Count > 0);
         List<HelixSubmissionModel> helixSubmissions = new List<HelixSubmissionModel>();
         var allWorkItems = new List<Tuple<HelixWorkItemDetail, HelixSubmissionModel, AzureDevOpsJobModel>>();
+        List<HelixWorkItemModel> workItemModels = new List<HelixWorkItemModel>();
         object workItemLock = new object();
 
+        string token = Environment.GetEnvironmentVariable("kustoKey");
+        string clientId = Environment.GetEnvironmentVariable("clientId");
+        string authority = Environment.GetEnvironmentVariable("authorityId");
+        string connectionString = $"Data Source=https://engsrvprod.kusto.windows.net:443;AAD Federated Security=True;Application Client Id={clientId};Application Key={token};Authority ID={authority}";
+        
+        var client = Kusto.Data.Net.Client.KustoClientFactory.CreateCslQueryProvider(connectionString);
+        var clientRequestProperties = new ClientRequestProperties() { ClientRequestId = Guid.NewGuid().ToString() };
+
+        string buildId = helixJobs[0].Item3.PipelineId;
+
+        Dictionary<string, Tuple<AzureDevOpsStepModel, AzureDevOpsJobModel>> jobsWithSubmissions = new Dictionary<string, Tuple<AzureDevOpsStepModel, AzureDevOpsJobModel>>();
+        foreach (var helixJob in helixJobs)
+        {
+            Debug.Assert(!jobsWithSubmissions.ContainsKey(helixJob.Item1));
+            jobsWithSubmissions[helixJob.Item1] = new Tuple<AzureDevOpsStepModel, AzureDevOpsJobModel>(helixJob.Item2, helixJob.Item3);
+        }
+
+        var query = @"Jobs
+| extend Properties=parse_json(Properties)
+| extend BuildNumber=tostring(Properties.BuildNumber), Project=tostring(Properties.Project)";
+        query += $"| where BuildNumber == '{buildId}' and Project == 'public'";
+
+        Dictionary<string, JobSubmission> submissions = new Dictionary<string, JobSubmission>();
+
+        using (var reader = client.ExecuteQuery("engineeringdata", query, clientRequestProperties))
+        {
+            // Determine count of records
+            while(reader.Read())
+            {
+                JobSubmission submission = new JobSubmission();
+
+                submission.JobId = reader.GetInt64(0);
+                submission.JobName = reader.GetString(1);
+                submission.Source = reader.GetString(2);
+                submission.Type = reader.GetString(3);
+                submission.Creator = reader.GetInt32(5);
+                submission.Queued = reader.GetDateTime(9);
+                submission.Started = reader.GetDateTime(10);
+                submission.Finished = reader.GetDateTime(11);
+                submission.CountPassedfTests = reader.GetInt32(12);
+                submission.CountFailedTests = reader.GetInt32(13);
+                submission.CountSkippedTests = reader.GetInt32(14);
+
+                submission.CountItemsPassed = reader.GetInt32(15);
+                submission.CountItemsWarnings = reader.GetInt32(16);
+                submission.CountitemsBadExit = reader.GetInt32(17);
+                submission.CountItemsFailed = reader.GetInt32(18);
+                submission.CountItemsError = reader.GetInt32(19);
+                submission.CountItemsTimeout = reader.GetInt32(20);
+                
+                submission.CountInitialItems = reader.GetInt32(21);
+                submission.CountTotalItems = reader.GetInt32(22);
+
+                submission.JobListUri = reader.GetString(23);
+                submission.QueueName = reader.GetString(25);
+
+                submission.CountItemsNotRun = reader.GetInt32(26);
+                submission.CountTestsPassedOnRetry = reader.GetInt32(27);
+                submission.CountItemsPassedOnRetry = reader.GetInt32(28);
+
+                submission.Repository = reader.GetString(34);
+                submission.Branch = reader.GetString(35);
+                submission.BuildNumber = reader.GetString(36);
+
+                submissions.Add(submission.JobName, submission);
+            }
+        }
+
+        foreach (var submissionKeyValue in submissions)
+        {
+            HelixSubmissionModel model = new HelixSubmissionModel();
+
+            if (!jobsWithSubmissions.ContainsKey(submissionKeyValue.Key))
+            {
+                // This is a retry job
+                continue;
+            }
+
+            var helixJob = jobsWithSubmissions[submissionKeyValue.Key];
+
+            JobSubmission submission = submissionKeyValue.Value;
+
+            model.JobId = helixJob.Item2.JobGuid;
+            model.JobName = helixJob.Item2.Name;
+
+            model.Passed = submission.CountTotalItems == submission.CountItemsPassed;
+            model.Queues = new List<string>() { submission.QueueName };
+            model.RuntimePipelineId = buildId;
+            model.Source = submission.Branch;
+            model.Start = submission.Started;
+
+            model.StepId = helixJob.Item1.Id;
+
+            model.End = submission.Finished;
+            model.ElapsedTime = (model.End - model.Start).Milliseconds;
+
+            model.Id = Guid.NewGuid().ToString();
+            model.Type = submission.Type;
+
+            model.WorkItemCount = submission.CountInitialItems;
+
+            model.HelixJobName = submission.JobName;
+
+            helixSubmissions.Add(model);
+        }
+
+        Dictionary<string, HelixSubmissionModel> submissionsById = new Dictionary<string, HelixSubmissionModel>();
+
+        foreach (var submissionModel in helixSubmissions)
+        {
+            submissionsById.Add(submissionModel.HelixJobName, submissionModel);
+        }
+
+        query = @"Jobs
+| extend Properties=parse_json(Properties)
+| extend BuildNumber=tostring(Properties.BuildNumber), Project=tostring(Properties.Project)";
+        query += $"| where BuildNumber == '{buildId}' and Project == 'public'";
+        query += @"| project JobId
+| join kind=inner(WorkItems | project JobId, JobName, WorkItemId, Name, PassCount, FailCount, SkipCount, WarnCount, Queued, Started, Finished, ExitCode, ConsoleUri, MachineName, WorkItemType, Uri, PassOnRetryCount, Attempt, QueueName) on JobId
+| project-away JobId1
+| extend WorkItemName=Name
+| project-away Name
+| join (Logs | where Module == 'run_client.py' | project WorkItemFriendlyName, LogUri, WorkItemName, JobId) on WorkItemName
+| project-away WorkItemName1, JobId, JobId1, WorkItemId, QueueName";
+
+        Dictionary<string, WorkItemDetails> workItems = new Dictionary<string, WorkItemDetails>();
+
+        // Now go through all workitems
+        using (var reader = client.ExecuteQuery("engineeringdata", query, clientRequestProperties))
+        {
+            // Determine count of records
+            while(reader.Read())
+            {
+                WorkItemDetails details = new WorkItemDetails();
+
+                details.JobName = reader.GetString(0);
+                details.PassCount = reader.GetInt32(1);
+                details.FailCount = reader.GetInt32(2);
+                details.SkipCount = reader.GetInt32(3);
+                details.WarnCount = reader.GetInt32(4);
+                details.Queued = reader.GetDateTime(5);
+                details.Started = reader.GetDateTime(6);
+                details.Finished = reader.GetDateTime(7);
+                details.ExitCode = reader.GetInt32(8);
+                details.ConsoleUri = reader.GetString(9);
+                details.MachineName = reader.GetString(10);
+                details.WorkItemType = reader.GetString(11);
+                details.TestResultsUri = reader.GetString(12);
+                details.PassOnRetryCount = reader.GetInt32(13);
+                details.Attempt = reader.GetInt32(14);
+                details.WorkItemName = reader.GetString(15);
+                details.WorkItemFriendlyName = reader.GetString(16);
+                details.LogUri = reader.GetString(17);
+
+                workItems.Add(details.WorkItemName, details);
+            }
+        }
+
         List<Task> tasks = new List<Task>();
-        foreach (var jobTuple in helixJobs)
-        {
-            tasks.Add(DownloadSubmission(jobTuple, helixSubmissions, allWorkItems, workItemLock));
-        }
-
-        DateTime helixSubmissionsStartTime = DateTime.Now;
-        Console.WriteLine("Starting download helix submissions.");
-        await Task.WhenAll(tasks);
-        tasks.Clear();
-
-        foreach (var submission in helixSubmissions)
-        {
-            SubmissionQueue.Enqueue(submission);
-        }
-
-        DateTime helixSubmissionsEndTime = DateTime.Now;
-        double elapsedHelixSubmissionDownloadtime = (helixSubmissionsEndTime - helixSubmissionsStartTime).TotalSeconds;
-
-        Console.WriteLine($"Downloaded {helixSubmissions.Count} helix submissions in {elapsedHelixSubmissionDownloadtime}s");
-
-        List<HelixWorkItemModel> uploadedItems = new List<HelixWorkItemModel>();
-        List<HelixWorkItemModel> downloadedItems = new List<HelixWorkItemModel>();
-
-        foreach (var item in allWorkItems)
-        {
-            Trace.Assert(downloadedItems != null);
-            Trace.Assert(uploadedItems != null);
-            Trace.Assert(item != null);
-        }
-
-        DateTime helixWorkitemDownloadStartTime = DateTime.Now;
 
         int currentItem = 1;
-        int totalItems = allWorkItems.Count;
+        int totalItems = workItems.Count;
         int limit = 100;
+        DateTime helixWorkitemDownloadStartTime = DateTime.Now;
         DateTime limitStart = DateTime.Now;
-        foreach (var item in allWorkItems)
+
+        foreach(var workItemKeyValue in workItems)
         {
+            if (!submissionsById.ContainsKey(workItemKeyValue.Value.JobName))
+            {
+                continue;
+            }
+
+            HelixSubmissionModel model = submissionsById[workItemKeyValue.Value.JobName];
+
+            Debug.Assert(jobsWithSubmissions.ContainsKey(model.HelixJobName));
+            if (!jobsWithSubmissions.ContainsKey(model.HelixJobName))
+            {
+                continue;
+            }
+
+            var jobModel = jobsWithSubmissions[model.HelixJobName];
+            
+            Console.WriteLine($"[{currentItem++}:{totalItems}]: Started.");
+            tasks.Add(PopulateHelixWorkItem(buildId, workItemModels, workItemKeyValue.Value, model, jobModel.Item2));
+
             if (tasks.Count == limit)
             {
                 await Task.WhenAll(tasks);
@@ -167,23 +373,20 @@ public class HelixIO
 
                 Console.WriteLine($"[Helix WorkItem] -- {limit} downloaded in {elapsedLimitSeconds}s");
             }
-            Console.WriteLine($"[{currentItem++}:{totalItems}]: Started.");
-
-            Trace.Assert(downloadedItems != null);
-            Trace.Assert(uploadedItems != null);
-            Trace.Assert(item != null);
-
-            tasks.Add(UploadHelixWorkItemTry(downloadedItems, uploadedItems, item.Item1, item.Item2, item.Item3));
         }
-
-        Console.WriteLine("Starting download helix work items.");
-        await Task.WhenAll(tasks);
 
         DateTime helixWorkitemDownloadEndTime = DateTime.Now;
         double elapsedHelixWorkItemDownloadtime = (helixWorkitemDownloadEndTime - helixWorkitemDownloadStartTime).TotalMinutes;
 
-        Console.WriteLine($"Downloaded {downloadedItems.Count} helix work items in {elapsedHelixWorkItemDownloadtime}m");
-        Console.WriteLine($"To upload {uploadedItems.Count}");
+        foreach (var submission in helixSubmissions)
+        {
+            SubmissionQueue.Enqueue(submission);
+        }
+
+        foreach (var workItemModel in workItemModels)
+        {
+            SubmitToUpload(workItemModel);
+        }
 
         long testCount = TestQueue.Count;
 
@@ -207,144 +410,24 @@ public class HelixIO
     // Helper functions
     ////////////////////////////////////////////////////////////////////////////
 
-    private async Task DownloadSubmission(Tuple<string, AzureDevOpsStepModel, AzureDevOpsJobModel> jobTuple, List<HelixSubmissionModel> helixSubmissions, List<Tuple<HelixWorkItemDetail, HelixSubmissionModel, AzureDevOpsJobModel>> allWorkItems, object workItemLock)
-    {
-        var job = jobTuple.Item1;
-        string helixApiString = "https://helix.dot.net/api/2019-06-17/jobs/";
-
-        HelixSubmissionModel model = new HelixSubmissionModel();
-        model.Id = Guid.NewGuid().ToString();
-
-        model.Passed = false;
-        model.Queues = new List<string>();
-
-        string summaryUri = $"{helixApiString}/{job}";
-        string workitemsUri = $"{helixApiString}/{job}/workitems";
-
-        DateTime beginSummary = DateTime.Now;
-        string summaryResponse = await Shared.GetAsync(summaryUri);
-        DateTime endSummary = DateTime.Now;
-
-        double elapsedSummaryTime = (endSummary - beginSummary).TotalMilliseconds;
-        Console.WriteLine($"[Helix] -- [{job}]: Downloaded in {elapsedSummaryTime} ms.");
-
-        HelixWorkItemSummary summary = JsonConvert.DeserializeObject<HelixWorkItemSummary>(summaryResponse);
-
-        if (summary.Finished == null || summary.Created == null)
-        {
-            return;
-        }
-
-        model.End = DateTime.Parse(summary.Finished);
-        model.Start = DateTime.Parse(summary.Created);
-        model.ElapsedTime = (model.End - model.Start).TotalSeconds;
-
-        model.Name = summary.Name;
-        model.Passed = false;
-        model.Queues.Add(summary.Properties["operatingSystem"]);
-        model.Source = summary.Source;
-        model.Type = summary.Type;
-        model.StepId = jobTuple.Item2.Id;
-        model.JobId = jobTuple.Item3.Id;
-        model.JobName = jobTuple.Item3.Name;
-        model.RuntimePipelineId = jobTuple.Item3.PipelineId;
-
-        string workItemDetailResponse = null;
-        try
-        {
-            workItemDetailResponse = await Shared.GetAsync(workitemsUri);
-        }
-        catch (Exception e)
-        {
-            // Some issue with helix keeps us from downloading this item
-            return;
-        }
-
-        string workItemJson = workItemDetailResponse;
-        List<HelixWorkItemDetail> workItems = JsonConvert.DeserializeObject<List<HelixWorkItemDetail>>(workItemJson);
-
-        Trace.Assert(workItemJson != null);
-        model.WorkItemCount = workItems.Count;
-
-        helixSubmissions.Add(model);
-
-        lock(workItemLock)
-        {
-            foreach (var item in workItems)
-            {
-                allWorkItems.Add(new Tuple<HelixWorkItemDetail, HelixSubmissionModel, AzureDevOpsJobModel>(item, model, jobTuple.Item3));
-            }
-        }
-    }
-
-    private async Task UploadHelixWorkItemTry(List<HelixWorkItemModel> workItems, List<HelixWorkItemModel> uploadedItems, HelixWorkItemDetail item, HelixSubmissionModel model, AzureDevOpsJobModel jobModel)
-    {
-        bool failed = false;
-        try
-        {
-            await UploadHelixWorkItem(workItems, uploadedItems, item, model, jobModel);
-        }
-        catch(Exception e)
-        {
-            failed = true;
-            // First chance.
-            Console.WriteLine($"Encountered {e.Message}");
-        }
-
-        if (failed)
-        {
-            // Try again, but do not catch if there is an issue
-            await UploadHelixWorkItem(workItems, uploadedItems, item, model, jobModel);
-        }
-    }
-
-    private async Task UploadHelixWorkItem(List<HelixWorkItemModel> workItems, List<HelixWorkItemModel> uploadedItems, HelixWorkItemDetail item, HelixSubmissionModel model, AzureDevOpsJobModel jobModel)
+    private async Task PopulateHelixWorkItem(string buildId, List<HelixWorkItemModel> workItems, WorkItemDetails detail, HelixSubmissionModel model, AzureDevOpsJobModel jobModel)
     {
         DateTime startHelixWorkitem = DateTime.Now;
-        string workItemDetailsStr = null;
-        try
-        {
-            workItemDetailsStr = await Shared.GetAsync(item.DetailsUrl);
-        }
-        catch (Exception e)
-        {
-            return;
-        }
-
         var modelToAdd = new HelixWorkItemModel();
 
-        HelixWorkItem workItem = JsonConvert.DeserializeObject<HelixWorkItem>(workItemDetailsStr);
-
         HelixWorkItemModel workItemModel = new HelixWorkItemModel();
-        workItemModel.ExitCode = workItem.ExitCode;
-        workItemModel.MachineName = workItem.MachineName;
-        workItemModel.Name = workItem.Name;
-        workItemModel.JobId = jobModel.JobGuid;
-        workItemModel.RuntimePipelineId = jobModel.PipelineId;
+        workItemModel.ExitCode = detail.ExitCode;
+        workItemModel.MachineName = detail.MachineName;
+        workItemModel.Name = detail.WorkItemFriendlyName;
+        workItemModel.JobId = detail.JobName;
+        workItemModel.RuntimePipelineId = buildId;
 
         workItemModel.Id = Guid.NewGuid().ToString();
 
-        string logUri = null;
-        foreach (var log in workItem.Logs)
-        {
-            if (log["Module"] == "run_client.py")
-            {
-                logUri = log["Uri"];
-                break;
-            }
-        }
+        string logUri = detail.LogUri;
+        string testXmlUri = detail.TestResultsUri;
 
-        string testXmlUri = null;
-        foreach (var file in workItem.Files)
-        {
-            if (file["FileName"].Contains(".xml"))
-            {
-                testXmlUri = file["Uri"];
-                break;
-            }
-        }
-
-        if (testXmlUri != null)
+        if (testXmlUri != null && testXmlUri != "")
         {
             string xmlContents = null;
             try
@@ -641,7 +724,7 @@ public class HelixIO
                     
                     try
                     {
-                        workItemModel.Console = await Shared.GetAsync(workItem.ConsoleOutputUri);
+                        workItemModel.Console = await Shared.GetAsync(detail.ConsoleUri);
                     }
                     catch(Exception e)
                     {
@@ -653,9 +736,6 @@ public class HelixIO
                 workItemModel.StepId = model.StepId;
 
                 workItemModel.JobName = jobModel.Name;
-
-                SubmitToUpload(workItemModel);
-                uploadedItems.Add(workItemModel);
 
                 modelToAdd.Id = workItemModel.Id;
                 modelToAdd.ElapsedRunTime = workItemModel.ElapsedRunTime;
