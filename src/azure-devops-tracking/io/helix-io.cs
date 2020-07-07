@@ -164,6 +164,9 @@ public class HelixIO
 
     private static object HelixLock = new object();
 
+
+    private List<HelixWorkItemModel> WorkItems = new List<HelixWorkItemModel>();
+
     ////////////////////////////////////////////////////////////////////////////
     // Member functions
     ////////////////////////////////////////////////////////////////////////////
@@ -174,7 +177,6 @@ public class HelixIO
         Trace.Assert(helixJobs.Count > 0);
         List<HelixSubmissionModel> helixSubmissions = new List<HelixSubmissionModel>();
         var allWorkItems = new List<Tuple<HelixWorkItemDetail, HelixSubmissionModel, AzureDevOpsJobModel>>();
-        List<HelixWorkItemModel> workItemModels = new List<HelixWorkItemModel>();
         object workItemLock = new object();
 
         string token = Environment.GetEnvironmentVariable("kustoKey");
@@ -305,7 +307,7 @@ public class HelixIO
         Dictionary<string, WorkItemDetails> workItems = new Dictionary<string, WorkItemDetails>();
 
         // Now go through all workitems
-        using (var reader = client.ExecuteQuery("engineeringdata", query, clientRequestProperties))
+        using (var reader = await client.ExecuteQueryAsync("engineeringdata", query, clientRequestProperties))
         {
             // Determine count of records
             while(reader.Read())
@@ -331,6 +333,8 @@ public class HelixIO
                 details.WorkItemFriendlyName = reader.GetString(16);
                 details.LogUri = reader.GetString(17);
 
+                Debug.Assert(!workItems.ContainsKey(details.WorkItemName));
+
                 workItems.Add(details.WorkItemName, details);
             }
         }
@@ -339,7 +343,7 @@ public class HelixIO
 
         int currentItem = 1;
         int totalItems = workItems.Count;
-        int limit = 100;
+        int limit = 500;
         DateTime helixWorkitemDownloadStartTime = DateTime.Now;
         DateTime limitStart = DateTime.Now;
 
@@ -347,6 +351,7 @@ public class HelixIO
         {
             if (!submissionsById.ContainsKey(workItemKeyValue.Value.JobName))
             {
+                ++currentItem;
                 continue;
             }
 
@@ -355,13 +360,14 @@ public class HelixIO
             Debug.Assert(jobsWithSubmissions.ContainsKey(model.HelixJobName));
             if (!jobsWithSubmissions.ContainsKey(model.HelixJobName))
             {
+                ++currentItem;
                 continue;
             }
 
             var jobModel = jobsWithSubmissions[model.HelixJobName];
             
             Console.WriteLine($"[{currentItem++}:{totalItems}]: Started.");
-            tasks.Add(PopulateHelixWorkItem(buildId, workItemModels, workItemKeyValue.Value, model, jobModel.Item2));
+            tasks.Add(PopulateHelixWorkItem(buildId, workItemKeyValue.Value, model, jobModel.Item2));
 
             if (tasks.Count == limit)
             {
@@ -375,15 +381,20 @@ public class HelixIO
             }
         }
 
+        await Task.WhenAll(tasks);
+        tasks.Clear();
+
         DateTime helixWorkitemDownloadEndTime = DateTime.Now;
         double elapsedHelixWorkItemDownloadtime = (helixWorkitemDownloadEndTime - helixWorkitemDownloadStartTime).TotalMinutes;
+
+        Console.WriteLine($"Total time to downlaod {totalItems}: {elapsedHelixWorkItemDownloadtime}m");
 
         foreach (var submission in helixSubmissions)
         {
             SubmissionQueue.Enqueue(submission);
         }
 
-        foreach (var workItemModel in workItemModels)
+        foreach (var workItemModel in WorkItems)
         {
             SubmitToUpload(workItemModel);
         }
@@ -410,7 +421,7 @@ public class HelixIO
     // Helper functions
     ////////////////////////////////////////////////////////////////////////////
 
-    private async Task PopulateHelixWorkItem(string buildId, List<HelixWorkItemModel> workItems, WorkItemDetails detail, HelixSubmissionModel model, AzureDevOpsJobModel jobModel)
+    private async Task PopulateHelixWorkItem(string buildId, WorkItemDetails detail, HelixSubmissionModel model, AzureDevOpsJobModel jobModel)
     {
         DateTime startHelixWorkitem = DateTime.Now;
         var modelToAdd = new HelixWorkItemModel();
@@ -442,57 +453,57 @@ public class HelixIO
             try
             {
                 XmlDocument doc = new XmlDocument();
-            doc.LoadXml(xmlContents);
+                doc.LoadXml(xmlContents);
 
-            int totalRunTests = 0;
-            int passedTests = 0;
-            int failedTests = 0;
-            XmlNodeList collections = doc.GetElementsByTagName("collection");
+                int totalRunTests = 0;
+                int passedTests = 0;
+                int failedTests = 0;
+                XmlNodeList collections = doc.GetElementsByTagName("collection");
 
-            foreach (XmlNode collection in collections)
-            {
-                int amountOfFailedTests = 0;
-                
-                var passedStr = collection.Attributes["passed"].Value;
-                var failedStr = collection.Attributes["failed"].Value;
+                foreach (XmlNode collection in collections)
+                {
+                    int amountOfFailedTests = 0;
+                    
+                    var passedStr = collection.Attributes["passed"].Value;
+                    var failedStr = collection.Attributes["failed"].Value;
 
-                passedTests += int.Parse(passedStr);
-                amountOfFailedTests = int.Parse(failedStr);
+                    passedTests += int.Parse(passedStr);
+                    amountOfFailedTests = int.Parse(failedStr);
 
-                failedTests += amountOfFailedTests;
+                    failedTests += amountOfFailedTests;
 
-                //     foreach (XmlNode test in collection.SelectNodes("test"))
-                //     {
-                //         string console = null;
-                //         if (test.ChildNodes.Count > 0)
-                //         {
-                //             console = test.ChildNodes[0].InnerText;
-                //         }
+                    foreach (XmlNode test in collection.SelectNodes("test"))
+                    {
+                        string console = null;
+                        if (test.ChildNodes.Count > 0)
+                        {
+                            console = test.ChildNodes[0].InnerText;
+                        }
 
-                //         string testName = test.Attributes["name"].Value;
-                //         bool passed = test.Attributes["result"].Value == "Pass" ? true : false;
-                //         double timeRun = Double.Parse(test.Attributes["time"].Value);
+                        string testName = test.Attributes["name"].Value;
+                        bool passed = test.Attributes["result"].Value == "Pass" ? true : false;
+                        double timeRun = Double.Parse(test.Attributes["time"].Value);
                         
-                //         Test testModel = new Test();
+                        Test testModel = new Test();
 
-                //         if (passed)
-                //         {
-                //             testModel.Console = null;
-                //         }
-                //         else
-                //         {
-                //             testModel.Console = console;
-                //         }
+                        if (passed)
+                        {
+                            testModel.Console = null;
+                        }
+                        else
+                        {
+                            testModel.Console = console;
+                        }
 
-                //         testModel.ElapsedTime = timeRun;
-                //         testModel.Name = testName;
-                //         testModel.Passed = passed;
+                        testModel.ElapsedTime = timeRun;
+                        testModel.Name = testName;
+                        testModel.Passed = passed;
 
-                //         testModel.Id = Guid.NewGuid().ToString();
-                //         testModel.HelixWorkItemId = workItemModel.Id;
+                        testModel.Id = Guid.NewGuid().ToString();
+                        testModel.HelixWorkItemId = workItemModel.Id;
 
-                //         SubmitTestToUpload(testModel);
-                //     }
+                        SubmitTestToUpload(testModel);
+                    }
                 }
 
                 totalRunTests = passedTests + failedTests;
@@ -779,7 +790,8 @@ public class HelixIO
         DateTime endHelixWorkItem = DateTime.Now;
         double elapsedTime = (endHelixWorkItem - startHelixWorkitem).TotalMilliseconds;
 
-        workItems.Add(modelToAdd);
+        WorkItems.Add(modelToAdd);
+
         Console.WriteLine($"[Helix Workitem] -- [{modelToAdd.Name}]:  in {elapsedTime} ms");
     }
 
